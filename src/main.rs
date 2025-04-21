@@ -18,10 +18,8 @@ fn get_config() -> &'static TokenizerConfig {
     })
 }
 // load 函数
-fn main() {
-    let path = std::env::args_os().nth(1).unwrap();
-    let file = File::open(path).unwrap();
-    let file = unsafe { Mmap::map(&file) }.unwrap();
+fn load(file:Mmap) -> TokenizerConfig {
+    
     let gguf = GGuf::new(&file).unwrap();
 
     let model = gguf.tokenizer_ggml_model().unwrap();
@@ -313,9 +311,14 @@ fn main() {
 
     config.token_to_id = token_to_id;
     config.id_to_token = id_to_token;
+    config
+}
+fn main() {
+    let path = std::env::args_os().nth(1).unwrap();
+    let file = File::open(path).unwrap();
+    let file = unsafe { Mmap::map(&file) }.unwrap();
+    let config = load(file);
     print!("{:?}", config)
-
-    // 构建终止字符表
 
     // println!("{}", gguf.general_architecture().unwrap())
 }
