@@ -1,9 +1,23 @@
+#![feature(linked_list_cursors)]
 use ggus::{GGuf, GGufMetaMapExt};
 use memmap2::Mmap;
-use std::collections::HashSet;
+use std::collections::{HashSet, LinkedList};
+use std::fmt::Error;
+use std::sync::OnceLock;
 use std::{collections::HashMap, fs::File};
 type TokenId = u32;
 
+static GLOBAL_CONFIG: OnceLock<TokenizerConfig> = OnceLock::new();
+
+// 获取或初始化全局配置的函数
+fn get_config() -> &'static TokenizerConfig {
+    GLOBAL_CONFIG.get_or_init(|| {
+        println!("Initializing TokenizerConfig for the first time..."); // 仅在首次调用时打印
+        // 这里创建 TokenizerConfig 的实例
+        TokenizerConfig::new()
+    })
+}
+// load 函数
 fn main() {
     let path = std::env::args_os().nth(1).unwrap();
     let file = File::open(path).unwrap();
@@ -75,18 +89,18 @@ fn main() {
 
         token_to_id.insert(text, i as u32);
     }
-    // TODO 待完善 linefeed_id  构造换行符
+
+    // TODO 待完善 linefeed_id 暂时不支持SPM  构造换行符
     match config.vocab_type {
         VocabType::None | VocabType::Bpe => {
             // const std::vector<int> ids = tokenize("\n", false);
 
             // //GGML_ASSERT(!ids.empty() && "model vocab missing newline token");
-            // if (ids.empty()) {
-            //     LLAMA_LOG_WARN("%s: model vocab missing newline token, using special_pad_id instead\n", __func__);
-            //     linefeed_id = special_pad_id;
-            // } else {
-            //     linefeed_id = ids[0];
-            // }
+            if token_to_id.get("\n").is_none() {
+                config.linefeed = config.pad;
+            } else {
+                config.linefeed = *token_to_id.get("\n").unwrap();
+            }
         }
         VocabType::Spm => {
             config.linefeed = if token_to_id.contains_key("\n") {
@@ -282,6 +296,23 @@ fn main() {
             }
         }
     }
+    // 收集特殊token
+    config.special_tokens = id_to_token
+        .iter()
+        .enumerate() // 获取索引 (TokenId) 和 TokenData
+        .filter(|(_, token_data)| {
+            // 检查 token 的属性是否为 Control, UserDefined 或 Unknown
+            let attr_val = token_data.attribute as i32;
+            let special_mask = TokenAttribute::Control as i32
+                | TokenAttribute::UserDefined as i32
+                | TokenAttribute::Unknown as i32;
+            (attr_val & special_mask) != 0
+        })
+        .map(|(index, _)| index as TokenId) // 提取符合条件的 TokenId (索引)
+        .collect(); // 收集到 Vec<TokenId> 中
+
+    config.token_to_id = token_to_id;
+    config.id_to_token = id_to_token;
     print!("{:?}", config)
 
     // 构建终止字符表
@@ -309,7 +340,47 @@ fn get_bool(model: bool, config: bool) -> bool {
         (false, false) => false,
     }
 }
-#[derive(Debug)]
+fn byte_to_token(ch: u8) -> Result<TokenId, Error> {
+    let config = get_config();
+    assert!(config.vocab_type != VocabType::None);
+
+    // 十六进制字符表
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    match config.vocab_type {
+        VocabType::Spm | VocabType::Ugm => {
+            // 构建形如 <0xHH> 的格式
+            let buf = [
+                b'<',
+                b'0',
+                b'x',
+                HEX[(ch >> 4) as usize],
+                HEX[(ch & 15) as usize],
+                b'>',
+                0,
+            ];
+
+            // 首先尝试查找十六进制格式的token
+            if let Some(token) = config.token_to_id.get(std::str::from_utf8(&buf).unwrap()) {
+                return Ok(*token);
+            }
+
+            // 回退到直接使用字节值
+            let buf2 = [ch, 0];
+            Ok(*config
+                .token_to_id
+                .get(std::str::from_utf8(&buf2).unwrap())
+                .expect("Token not found"))
+        }
+
+        // VocabType::Wpm | VocabType::Bpe => {
+        //     *config.token_to_id.get(&unicode_byte_to_utf8(ch))
+        //         .expect("Token not found")
+        // },
+        _ => panic!("Fatal error: unsupported vocab type"),
+    }
+}
+#[derive(Debug, Clone)]
 struct TokenizerConfig {
     vocab_type: VocabType,
     bos: u32,
@@ -335,8 +406,209 @@ struct TokenizerConfig {
     remove_extra_whitespaces: bool,
     escape_whitespaces: bool,
     treat_whitespace_as_suffix: bool,
+    token_to_id: HashMap<String, TokenId>,
+    special_tokens: Vec<TokenId>,
+    id_to_token: Vec<TokenData>,
+}
+fn tokenize(raw_text: String, add_special: bool, parse_special: bool) {
+    let config = get_config();
+
+    let mut fragment_buffer = if !raw_text.is_empty() {
+        FragmentBufferVariant::new_raw_text(raw_text.clone(), 0, raw_text.len() as i64)
+    } else {
+        // TODO 待完善
+        FragmentBufferVariant::new_raw_text(raw_text.clone(), 0, raw_text.len() as i64)
+    };
+    match config.vocab_type {
+        VocabType::None => todo!(),
+        VocabType::Spm => todo!(),
+        VocabType::Bpe => todo!(),
+        VocabType::Wpm => todo!(),
+        VocabType::Ugm => todo!(),
+        VocabType::Rwkv => todo!(),
+    }
 }
 
+fn tokenizer_st_partition(buffer: &mut LinkedList<FragmentBufferVariant>, parse_special: bool) {
+    let config = get_config();
+    // 遍历每个特殊标记
+    for special_id in &config.special_tokens {
+        let data = config.id_to_token[*special_id as usize].clone();
+        let text = &data.text;
+
+        // 如果不解析特殊标记且当前标记是控制标记或未知标记，则跳过
+        if !parse_special
+            && ((data.attribute as u32)
+                & (TokenAttribute::Control as u32 | TokenAttribute::Unknown as u32))
+                != 0
+        {
+            continue;
+        }
+
+        // 遍历每个文本片段
+        let mut cursor = buffer.cursor_front_mut();
+        while let Some(fragment) = cursor.current() {
+            // 如果片段是原始文本（尚未处理）
+            if fragment.variant_type == FragmentBufferVariantType::RawText {
+                let FragmentBufferVariant {
+                    raw_text,
+                    offset,
+                    length,
+                    ..
+                } = &fragment.clone();
+                let mut raw_text_base_offset = *offset;
+                let mut raw_text_base_length = *length;
+
+                // 在文本中循环查找特殊标记
+                loop {
+                    // 在当前片段中查找特殊标记的第一次出现
+                    let text_slice = &raw_text[raw_text_base_offset as usize
+                        ..(raw_text_base_offset + raw_text_base_length) as usize];
+                    let match_pos = text_slice.find(text);
+
+                    // 如果没有找到，停止处理该片段
+                    let match_pos = match match_pos {
+                        None => break,
+                        Some(pos) => raw_text_base_offset as usize + pos,
+                    };
+
+                    // 如果匹配位置在基础偏移量之后，处理左侧文本
+                    if match_pos > raw_text_base_offset as usize {
+                        let left_reminder_offset = raw_text_base_offset as i64;
+                        let mut left_reminder_length =
+                            match_pos as i64 - raw_text_base_offset as i64;
+
+                        // 如果需要去除左侧空白
+                        if (data.attribute as u32 & TokenAttribute::LStrIp as u32) != 0 {
+                            while left_reminder_length > 0 {
+                                let last_char = raw_text
+                                    .chars()
+                                    .nth((left_reminder_offset + left_reminder_length - 1) as usize)
+                                    .unwrap();
+                                if !last_char.is_whitespace() {
+                                    break;
+                                }
+                                left_reminder_length -= 1;
+                            }
+                        }
+
+                        // 插入左侧文本片段
+                        if left_reminder_length > 0 {
+                            cursor.insert_after(
+                                FragmentBufferVariant::new_raw_text(
+                                    raw_text.clone(),
+                                    left_reminder_offset,
+                                    left_reminder_length,
+                                )
+                                .unwrap(),
+                            );
+                            cursor.move_next();
+                        }
+                    }
+
+                    // 插入特殊标记
+                    cursor.insert_after(FragmentBufferVariant::new_token(*special_id));
+                    cursor.move_next();
+
+                    // 处理右侧文本
+                    let right_start = match_pos + text.len();
+                    if right_start < (raw_text_base_offset + raw_text_base_length) as usize {
+                        let mut right_reminder_offset = right_start as i64;
+                        let mut right_reminder_length = raw_text_base_length
+                            - ((match_pos as u64 - raw_text_base_offset as u64)
+                                + text.len() as u64);
+
+                        // 如果需要去除右侧空白
+                        if (data.attribute as u32 & TokenAttribute::RStrIp as u32) != 0 {
+                            while right_reminder_length > 0 {
+                                let next_char = raw_text
+                                    .chars()
+                                    .nth(right_reminder_offset as usize)
+                                    .unwrap();
+                                if !next_char.is_whitespace() {
+                                    break;
+                                }
+                                right_reminder_offset += 1;
+                                right_reminder_length -= 1;
+                            }
+                        }
+
+                        // 插入右侧文本片段
+                        if right_reminder_length > 0 {
+                            cursor.insert_after(
+                                FragmentBufferVariant::new_raw_text(
+                                    raw_text.clone(),
+                                    right_reminder_offset,
+                                    right_reminder_length as i64,
+                                )
+                                .unwrap(),
+                            );
+                            cursor.move_next();
+                        }
+
+                        // 继续处理右侧文本
+                        raw_text_base_offset = right_reminder_offset as u64;
+                        raw_text_base_length = right_reminder_length;
+                    } else {
+                        // 删除当前片段并退出循环
+                        cursor.remove_current();
+                        break;
+                    }
+                }
+            }
+            cursor.move_next();
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum FragmentBufferVariantType {
+    Token,
+    RawText,
+}
+
+#[derive(Debug, Clone)]
+struct FragmentBufferVariant {
+    variant_type: FragmentBufferVariantType,
+    token: u32, // 假设 llama_token 是 i32 类型
+    raw_text: String,
+    offset: u64,
+    length: u64,
+}
+impl FragmentBufferVariant {
+    // 创建 Token 类型的变体
+    fn new_token(token: u32) -> Self {
+        Self {
+            variant_type: FragmentBufferVariantType::Token,
+            token,
+            raw_text: String::new(),
+            offset: 0,
+            length: 0,
+        }
+    }
+
+    // 创建 RawText 类型的变体
+    fn new_raw_text(text: String, offset: i64, length: i64) -> Result<Self, &'static str> {
+        // 参数验证
+        if offset < 0 {
+            return Err("offset must be non-negative");
+        }
+        if length < 1 {
+            return Err("length must be positive");
+        }
+        if (offset + length) as usize > text.len() {
+            return Err("offset + length exceeds text length");
+        }
+
+        Ok(Self {
+            variant_type: FragmentBufferVariantType::RawText,
+            token: NULL,
+            raw_text: text,
+            offset: offset as u64,
+            length: length as u64,
+        })
+    }
+}
 const NULL: u32 = u32::MAX;
 
 impl TokenizerConfig {
@@ -366,10 +638,13 @@ impl TokenizerConfig {
             remove_extra_whitespaces: false,
             escape_whitespaces: true,
             treat_whitespace_as_suffix: false,
+            token_to_id: HashMap::new(),
+            special_tokens: Vec::new(),
+            id_to_token: todo!(),
         }
     }
 }
-
+#[derive(Debug, Clone)]
 struct TokenData {
     pub text: String,
     pub score: f32,
@@ -377,7 +652,7 @@ struct TokenData {
 }
 
 #[repr(i32)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 enum TokenAttribute {
     Undefined = 0,
     Unknown = 1 << 0,
