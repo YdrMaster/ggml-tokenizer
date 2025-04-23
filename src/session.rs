@@ -11,32 +11,32 @@ use crate::{
 
 /// 符号结构体，表示文本中的一个符号
 #[derive(Clone, Debug)]
-pub struct LlmSymbol<'a> {
+pub struct LlmSymbol {
     /// 前一个符号的索引
     pub prev: i32,
     /// 下一个符号的索引
     pub next: i32,
     /// 指向原始文本的指针
-    pub text: &'a str,
+    pub text: String,
     /// 符号的长度
     pub n: usize,
 }
 
 /// BPE 标记器会话结构体
-pub struct LlmTokenizerBpeSession<'a> {
+pub struct LlmTokenizerBpeSession {
     /// 标记器引用
-    tokenizer: &'a LlmTokenizerBpe,
+    tokenizer: LlmTokenizerBpe,
     /// 符号列表
-    symbols: Vec<LlmSymbol<'a>>,
+    symbols: Vec<LlmSymbol>,
     /// 最终符号列表
-    symbols_final: Vec<LlmSymbol<'a>>,
+    symbols_final: Vec<LlmSymbol>,
     /// 工作队列
     work_queue: LlmBigramBpe,
 }
 
-impl<'a> LlmTokenizerBpeSession<'a> {
+impl LlmTokenizerBpeSession {
     /// 创建一个新的 BPE 标记器会话
-    pub fn new(tokenizer: &'a LlmTokenizerBpe) -> Self {
+    pub fn new(tokenizer: LlmTokenizerBpe) -> Self {
         Self {
             tokenizer,
             symbols: Vec::new(),
@@ -71,7 +71,7 @@ impl<'a> LlmTokenizerBpeSession<'a> {
     }
 
     /// 标记化文本
-    pub fn tokenize(&mut self, text: &'a str, output: &mut Vec<TokenId>) {
+    pub fn tokenize(&mut self, text: &str, output: &mut Vec<TokenId>) {
         let config: &TokenizerConfig = get_config();
         let mut final_prev_index = -1;
         let word_collection = unicode_regex_split(text, &self.tokenizer.regex_exprs);
@@ -91,7 +91,7 @@ impl<'a> LlmTokenizerBpeSession<'a> {
                 self.symbols.push(LlmSymbol {
                     prev: -1,
                     next: -1,
-                    text: word,
+                    text: word.to_string(),
                     n: word.len(),
                 });
                 offset = word.len();
@@ -102,7 +102,7 @@ impl<'a> LlmTokenizerBpeSession<'a> {
                 let char_len =
                     (word.len() - offset).min(unicode_len_utf8(word.as_bytes()[offset]) as usize);
                 let sym = LlmSymbol {
-                    text: &word[offset..],
+                    text: word.to_string(),
                     n: char_len,
                     prev: index - 1,
                     next: if offset + char_len == word.len() {
@@ -264,6 +264,7 @@ pub struct LlmBigramBpeItem {
 }
 
 /// BPE 二元组优先队列
+#[derive(Debug)]
 pub struct LlmBigramBpe {
     /// 内部队列
     queue: VecDeque<LlmBigramBpeItem>,
@@ -342,16 +343,17 @@ impl Ord for LlmBigramSpm {
 }
 
 /// SPM 标记器会话结构体
-pub struct LlmTokenizerSpmSession<'a> {
+#[derive(Debug)]
+pub struct LlmTokenizerSpmSession {
     /// 符号列表
-    symbols: Vec<LlmSymbol<'a>>,
+    symbols: Vec<LlmSymbol>,
     /// 工作队列
     work_queue: BinaryHeap<LlmBigramSpm>,
     /// 反向合并映射
     rev_merge: HashMap<String, (i32, i32)>,
 }
 
-impl<'a> LlmTokenizerSpmSession<'a> {
+impl<'a> LlmTokenizerSpmSession {
     /// 创建一个新的 SPM 标记器会话
     pub fn new() -> Self {
         Self {
@@ -375,7 +377,7 @@ impl<'a> LlmTokenizerSpmSession<'a> {
 
             // 创建新的符号
             let sym = LlmSymbol {
-                text: &text[offs..],
+                text: text.to_string(),
                 n: std::cmp::min(len, text.len() - offs),
                 prev: index - 1,
                 next: if offs + len >= text.len() {
@@ -482,7 +484,7 @@ impl<'a> LlmTokenizerSpmSession<'a> {
     }
 
     /// 重新分割符号
-    fn resegment(&self, symbol: &LlmSymbol<'a>, output: &mut Vec<u32>) {
+    fn resegment(&self, symbol: &LlmSymbol, output: &mut Vec<u32>) {
         let config = get_config();
         // 获取符号的文本
         let text = &symbol.text[..symbol.n];

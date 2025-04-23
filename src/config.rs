@@ -1,12 +1,14 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, LinkedList};
 
 use ggus::{GGuf, GGufMetaMapExt};
 use memmap2::Mmap;
 
 use crate::{
-    common::{GLOBAL_CONFIG, NULL, TokenAttribute, TokenData, TokenId},
+    FragmentBufferVariant, FragmentBufferVariantType,
+    common::{BPE_SESSION, GLOBAL_CONFIG, NULL, SPM_SESSION, TokenAttribute, TokenData, TokenId},
+    session, tokenizer_st_partition,
     unicode::unicode_byte_to_utf8,
-    untils::get_bool,
+    untils::{get_bool, llama_escape_whitespace},
 };
 
 // 获取或初始化全局配置的函数
@@ -18,11 +20,12 @@ pub fn get_config() -> &'static TokenizerConfig {
     })
 }
 
-// load 函数
+//  load 函数 默认都是gpt2
 pub fn load(file: Mmap) {
     let gguf = GGuf::new(&file).unwrap();
 
     let model = gguf.tokenizer_ggml_model().unwrap();
+    // 初始化session
     println!("tokenizer model = {model}");
     assert_eq!(model, "gpt2");
 
@@ -31,19 +34,18 @@ pub fn load(file: Mmap) {
     let bpe_ranks = load_gpt2(&gguf);
 
     println!("gpt2 n rank = {}", bpe_ranks.len());
-
+    // 设置预设字段
     config.bos = 11;
     config.eos = 11;
     config.unk = NULL;
     config.sep = NULL;
     config.pad = NULL;
     config.mask = NULL;
-
     // bpe 需要预填充数据，设置字段
     config.add_space_prefix = false;
     config.clean_spaces = true;
     // gpt2 默认填充规则  LLAMA_VOCAB_PRE_TYPE_GPT2
-
+    config.vocab_type = VocabType::Bpe;
     // 检查是是否有填充字段，
     // ggml 库中需要添加
     config.add_space_prefix = get_bool(
@@ -91,13 +93,11 @@ pub fn load(file: Mmap) {
     // TODO 待完善 linefeed_id 暂时不支持SPM  构造换行符
     match config.vocab_type {
         VocabType::None | VocabType::Bpe => {
-            // const std::vector<int> ids = tokenize("\n", false);
-
-            // //GGML_ASSERT(!ids.empty() && "model vocab missing newline token");
-            if token_to_id.get("\n").is_none() {
+            let ids = config.tokenize("\n", false, false);
+            if ids.is_empty() {
                 config.linefeed = config.pad;
             } else {
-                config.linefeed = *token_to_id.get("\n").unwrap();
+                config.linefeed = ids[0];
             }
         }
         VocabType::Spm => {
@@ -124,7 +124,7 @@ pub fn load(file: Mmap) {
             config.add_space_prefix,
         );
     }
-    // todo 为特殊token值为null构建字符,高度类似，能偶抽象成方法或者声明宏
+    // 为特殊token值为null构建字符,高度类似，能偶抽象成方法或者声明宏
     for (key, value) in &token_to_id {
         if config.eot == NULL {
             if key == "<|eot_id|>"
@@ -312,7 +312,6 @@ pub fn load(file: Mmap) {
     config.token_to_id = token_to_id;
     config.id_to_token = id_to_token;
     config.bpe_ranks = bpe_ranks;
-    GLOBAL_CONFIG.set(config).unwrap();
 }
 
 fn load_gpt2(gguf: &GGuf) -> HashMap<(String, String), usize> {
@@ -339,7 +338,7 @@ pub enum VocabType {
     Rwkv = 5, // RWKV tokenizer based on greedy tokenization
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TokenizerConfig {
     pub vocab_type: VocabType,
     pub bos: u32,
@@ -472,5 +471,95 @@ impl TokenizerConfig {
             Some(rank) => *rank as i32,
             None => -1,
         }
+    }
+    pub fn tokenize<'a>(
+        &self,
+        raw_text: &'a str,
+        add_special: bool,
+        parse_special: bool,
+    ) -> Vec<u32> {
+        let mut buffer = LinkedList::new();
+        let mut output = Vec::new();
+        if !raw_text.is_empty() {
+            buffer.push_front(
+                FragmentBufferVariant::new_raw_text(raw_text.to_string(), 0, raw_text.len() as i64)
+                    .unwrap(),
+            );
+            tokenizer_st_partition(&mut buffer, parse_special);
+        }
+        match self.vocab_type {
+            VocabType::None => todo!(),
+            VocabType::Spm => {
+                let mut is_prev_special = true; // prefix with space if first token
+                if add_special && self.add_bos {
+                    output.push(self.bos);
+                    is_prev_special = true;
+                }
+                for fragment in buffer.iter_mut() {
+                    let substring = &fragment.raw_text
+                        [(fragment.offset as usize)..(fragment.offset + fragment.length) as usize];
+                    let mut text = String::new();
+                    if fragment.variant_type == FragmentBufferVariantType::RawText {
+                        if self.add_space_prefix && is_prev_special {
+                            text.push(' ');
+                        }
+                        text.push_str(substring);
+
+                        llama_escape_whitespace(&mut text);
+                        todo!();
+                        // SPM_SESSION.get_mut().unwrap()
+                        //     .tokenize(&text, &mut output);
+                        is_prev_special = false;
+                    } else {
+                        output.push(fragment.token);
+                        is_prev_special = true;
+                    }
+                    // 检查是否有重复的 BOS 标记
+                    if add_special && self.add_bos && output.len() >= 2 && output[1] == self.bos {
+                        log::warn!(
+                            " Added a BOS token to the prompt as specified by the model but the prompt"
+                        );
+                    }
+
+                    // 添加 EOS 标记
+                    if add_special && self.add_eos {
+                        output.push(self.eos);
+                    }
+                }
+            }
+            VocabType::Bpe => {
+                let mut session_ref = BPE_SESSION.lock().unwrap();
+                for fragment in buffer.iter_mut() {
+                    if fragment.variant_type == FragmentBufferVariantType::RawText {
+                        let substring = &fragment.raw_text[(fragment.offset as usize)
+                            ..(fragment.offset + fragment.length) as usize];
+                        session_ref.tokenize(substring, &mut output);
+                    } else {
+                        session_ref.append_bos(&mut output);
+                    }
+                }
+                if add_special {
+                    session_ref.append_eos(&mut output);
+                }
+            }
+            VocabType::Wpm => todo!(),
+            VocabType::Ugm => todo!(),
+            VocabType::Rwkv => todo!(),
+        }
+        output
+    }
+}
+impl std::fmt::Debug for TokenizerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenizerConfig")
+            // 这里只添加您想要显示的字段
+            .field("vocab_type", &self.vocab_type)
+            .field("bos", &self.bos)
+            .field("eos", &self.eos)
+            .field("add_bos", &self.add_bos)
+            .field("add_eos", &self.add_eos)
+            .field("add_space_prefix", &self.add_space_prefix)
+            // 不添加您不想显示的字段：token_to_id, special_tokens, id_to_token, bpe_ranks
+            .finish()
     }
 }

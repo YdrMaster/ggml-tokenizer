@@ -5,9 +5,9 @@ use config::{VocabType, get_config, load};
 use memmap2::Mmap;
 use untils::llama_escape_whitespace;
 
-use std::collections::{BinaryHeap, LinkedList, VecDeque};
+use std::collections::LinkedList;
 
-use std::{collections::HashMap, fs::File};
+use std::fs::File;
 
 mod common;
 mod config;
@@ -23,62 +23,6 @@ fn main() {
     print!("{:?}", config)
 
     // println!("{}", gguf.general_architecture().unwrap())
-}
-
-fn tokenize(raw_text: String, add_special: bool, parse_special: bool) {
-    let config = get_config();
-    let mut buffer = LinkedList::new();
-    let mut output = Vec::new();
-    tokenizer_st_partition(&mut buffer, parse_special);
-    let mut fragment_buffer = if !raw_text.is_empty() {
-        FragmentBufferVariant::new_raw_text(raw_text.clone(), 0, raw_text.len() as i64)
-    } else {
-        unreachable!()
-    };
-    match config.vocab_type {
-        VocabType::None => todo!(),
-        VocabType::Spm => {
-            let mut is_prev_special = true; // prefix with space if first token
-            if add_special && config.add_bos {
-                output.push(config.bos);
-                is_prev_special = true;
-            }
-            for fragment in buffer.iter_mut() {
-                let substring = &fragment.raw_text
-                    [(fragment.offset as usize)..(fragment.offset + fragment.length) as usize];
-                let mut text = String::new();
-                if fragment.variant_type == FragmentBufferVariantType::RawText {
-                    if config.add_space_prefix && is_prev_special {
-                        text.push(' ');
-                    }
-                    text.push_str(substring);
-
-                    llama_escape_whitespace(&mut text);
-
-                    todo!();
-                    is_prev_special = false;
-                } else {
-                    output.push(fragment.token);
-                    is_prev_special = true;
-                }
-                // 检查是否有重复的 BOS 标记
-                if add_special && config.add_bos && output.len() >= 2 && output[1] == config.bos {
-                    log::warn!(
-                        " Added a BOS token to the prompt as specified by the model but the prompt"
-                    );
-                }
-
-                // 添加 EOS 标记
-                if add_special && config.add_eos {
-                    output.push(config.eos);
-                }
-            }
-        }
-        VocabType::Bpe => todo!(),
-        VocabType::Wpm => todo!(),
-        VocabType::Ugm => todo!(),
-        VocabType::Rwkv => todo!(),
-    }
 }
 
 fn tokenizer_st_partition(buffer: &mut LinkedList<FragmentBufferVariant>, parse_special: bool) {

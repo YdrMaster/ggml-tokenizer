@@ -1,10 +1,29 @@
+use std::sync::Arc;
+
+use std::sync::LazyLock;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 
-use crate::config::TokenizerConfig;
+use crate::session::LlmTokenizerBpe;
+use crate::{
+    config::TokenizerConfig,
+    session::{LlmTokenizerBpeSession, LlmTokenizerSpmSession},
+};
 
 pub const NULL: u32 = u32::MAX;
 pub type TokenId = u32;
 pub static GLOBAL_CONFIG: OnceLock<TokenizerConfig> = OnceLock::new();
+pub static SPM_SESSION: OnceLock<LlmTokenizerSpmSession> = OnceLock::new();
+pub static BPE_SESSION: LazyLock<Mutex<LlmTokenizerBpeSession>> = LazyLock::new(|| {
+    // TODO:这里需要根据配置设置不同的正则表达式，
+    Mutex::new(LlmTokenizerBpeSession::new(LlmTokenizerBpe {
+        regex_exprs: Vec::new(),
+    }))
+});
+pub fn init_spm_session() {
+    SPM_SESSION.set(LlmTokenizerSpmSession::new()).unwrap();
+}
+
 #[derive(Debug, Clone)]
 pub struct TokenData {
     pub text: String,
