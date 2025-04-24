@@ -5,20 +5,10 @@ use memmap2::Mmap;
 
 use crate::{
     FragmentBufferVariant, FragmentBufferVariantType,
-    common::{BPE_SESSION, GLOBAL_CONFIG, NULL, SPM_SESSION, TokenAttribute, TokenData, TokenId},
-    session, tokenizer_st_partition,
+    common::{BPE_SESSION, GLOBAL_CONFIG, NULL, TokenAttribute, TokenData, TokenId},
     unicode::unicode_byte_to_utf8,
     untils::{get_bool, llama_escape_whitespace},
 };
-
-// 获取或初始化全局配置的函数
-pub fn get_config() -> &'static TokenizerConfig {
-    GLOBAL_CONFIG.get_or_init(|| {
-        println!("Initializing TokenizerConfig for the first time..."); // 仅在首次调用时打印
-        // 这里创建 TokenizerConfig 的实例
-        TokenizerConfig::new()
-    })
-}
 
 //  load 函数 默认都是gpt2
 pub fn load(file: Mmap) {
@@ -89,7 +79,11 @@ pub fn load(file: Mmap) {
 
         token_to_id.insert(text, i as u32);
     }
-
+    // 第一次初始化 GLOBAL_CONFIG，以供tokenize使用
+    {
+        let mut global_config = GLOBAL_CONFIG.write().unwrap();
+        *global_config = Some(config.clone());
+    }
     // TODO 待完善 linefeed_id 暂时不支持SPM  构造换行符
     match config.vocab_type {
         VocabType::None | VocabType::Bpe => {
@@ -312,6 +306,11 @@ pub fn load(file: Mmap) {
     config.token_to_id = token_to_id;
     config.id_to_token = id_to_token;
     config.bpe_ranks = bpe_ranks;
+    //  第二次初始化，加载全部信息
+    {
+        let mut global_config = GLOBAL_CONFIG.write().unwrap();
+        *global_config = Some(config.clone());
+    }
 }
 
 fn load_gpt2(gguf: &GGuf) -> HashMap<(String, String), usize> {
@@ -485,7 +484,7 @@ impl TokenizerConfig {
                 FragmentBufferVariant::new_raw_text(raw_text.to_string(), 0, raw_text.len() as i64)
                     .unwrap(),
             );
-            tokenizer_st_partition(&mut buffer, parse_special);
+            self.tokenizer_st_partition(&mut buffer, parse_special);
         }
         match self.vocab_type {
             VocabType::None => todo!(),
@@ -547,6 +546,143 @@ impl TokenizerConfig {
             VocabType::Rwkv => todo!(),
         }
         output
+    }
+    fn tokenizer_st_partition(
+        &self,
+        buffer: &mut LinkedList<FragmentBufferVariant>,
+        parse_special: bool,
+    ) {
+        // 遍历每个特殊标记
+        for special_id in &self.special_tokens {
+            let data = self.id_to_token[*special_id as usize].clone();
+            let text = &data.text;
+
+            // 如果不解析特殊标记且当前标记是控制标记或未知标记，则跳过
+            if !parse_special
+                && ((data.attribute as u32)
+                    & (TokenAttribute::Control as u32 | TokenAttribute::Unknown as u32))
+                    != 0
+            {
+                continue;
+            }
+
+            // 遍历每个文本片段
+            let mut cursor = buffer.cursor_front_mut();
+            while let Some(fragment) = cursor.current() {
+                // 如果片段是原始文本（尚未处理）
+                if fragment.variant_type == FragmentBufferVariantType::RawText {
+                    let FragmentBufferVariant {
+                        raw_text,
+                        offset,
+                        length,
+                        ..
+                    } = &fragment.clone();
+                    let mut raw_text_base_offset = *offset;
+                    let mut raw_text_base_length = *length;
+
+                    // 在文本中循环查找特殊标记
+                    loop {
+                        // 在当前片段中查找特殊标记的第一次出现
+                        let text_slice = &raw_text[raw_text_base_offset as usize
+                            ..(raw_text_base_offset + raw_text_base_length) as usize];
+                        let match_pos = text_slice.find(text);
+
+                        // 如果没有找到，停止处理该片段
+                        let match_pos = match match_pos {
+                            None => break,
+                            Some(pos) => raw_text_base_offset as usize + pos,
+                        };
+
+                        // 如果匹配位置在基础偏移量之后，处理左侧文本
+                        if match_pos > raw_text_base_offset as usize {
+                            let left_reminder_offset = raw_text_base_offset as i64;
+                            let mut left_reminder_length =
+                                match_pos as i64 - raw_text_base_offset as i64;
+
+                            // 如果需要去除左侧空白
+                            if (data.attribute as u32 & TokenAttribute::LStrIp as u32) != 0 {
+                                while left_reminder_length > 0 {
+                                    let last_char = raw_text
+                                        .chars()
+                                        .nth(
+                                            (left_reminder_offset + left_reminder_length - 1)
+                                                as usize,
+                                        )
+                                        .unwrap();
+                                    if !last_char.is_whitespace() {
+                                        break;
+                                    }
+                                    left_reminder_length -= 1;
+                                }
+                            }
+
+                            // 插入左侧文本片段
+                            if left_reminder_length > 0 {
+                                cursor.insert_after(
+                                    FragmentBufferVariant::new_raw_text(
+                                        raw_text.clone(),
+                                        left_reminder_offset,
+                                        left_reminder_length,
+                                    )
+                                    .unwrap(),
+                                );
+                                cursor.move_next();
+                            }
+                        }
+
+                        // 插入特殊标记
+                        cursor.insert_after(FragmentBufferVariant::new_token(*special_id));
+                        cursor.move_next();
+
+                        // 处理右侧文本
+                        let right_start = match_pos + text.len();
+                        if right_start < (raw_text_base_offset + raw_text_base_length) as usize {
+                            let mut right_reminder_offset = right_start as i64;
+                            let mut right_reminder_length = raw_text_base_length
+                                - ((match_pos as u64 - raw_text_base_offset as u64)
+                                    + text.len() as u64);
+
+                            // 如果需要去除右侧空白
+                            if (data.attribute as u32 & TokenAttribute::RStrIp as u32) != 0 {
+                                while right_reminder_length > 0 {
+                                    let next_char = raw_text
+                                        .chars()
+                                        .nth(right_reminder_offset as usize)
+                                        .unwrap();
+                                    if !next_char.is_whitespace() {
+                                        break;
+                                    }
+                                    right_reminder_offset += 1;
+                                    right_reminder_length -= 1;
+                                }
+                            }
+
+                            // 插入右侧文本片段
+                            if right_reminder_length > 0 {
+                                cursor.insert_after(
+                                    FragmentBufferVariant::new_raw_text(
+                                        raw_text.clone(),
+                                        right_reminder_offset,
+                                        right_reminder_length as i64,
+                                    )
+                                    .unwrap(),
+                                );
+                                cursor.move_next();
+                            }
+
+                            // 继续处理右侧文本
+                            raw_text_base_offset = right_reminder_offset as u64;
+                            raw_text_base_length = right_reminder_length;
+                        } else {
+                            // 删除当前片段并退出循环
+                            cursor.remove_current();
+                            break;
+                        }
+                    }
+                }
+                cursor.move_next();
+            }
+        }
     }
 }
 impl std::fmt::Debug for TokenizerConfig {

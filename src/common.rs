@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::RwLock;
 
 use crate::session::LlmTokenizerBpe;
 use crate::{
@@ -12,10 +13,10 @@ use crate::{
 
 pub const NULL: u32 = u32::MAX;
 pub type TokenId = u32;
-pub static GLOBAL_CONFIG: OnceLock<TokenizerConfig> = OnceLock::new();
+pub static GLOBAL_CONFIG: RwLock<Option<TokenizerConfig>> = RwLock::new(None);
 pub static SPM_SESSION: OnceLock<LlmTokenizerSpmSession> = OnceLock::new();
 pub static BPE_SESSION: LazyLock<Mutex<LlmTokenizerBpeSession>> = LazyLock::new(|| {
-    // TODO:这里需要根据配置设置不同的正则表达式，
+    // TODO:这里需要
     Mutex::new(LlmTokenizerBpeSession::new(LlmTokenizerBpe {
         regex_exprs: Vec::new(),
     }))

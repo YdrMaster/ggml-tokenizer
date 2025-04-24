@@ -4,8 +4,8 @@ use std::{
 };
 
 use crate::{
-    common::{NULL, TokenId},
-    config::{TokenizerConfig, get_config},
+    common::{GLOBAL_CONFIG, NULL, TokenId},
+    config::TokenizerConfig,
     unicode::{unicode_len_utf8, unicode_regex_split},
 };
 
@@ -52,7 +52,8 @@ impl LlmTokenizerBpeSession {
 
     /// 添加 BOS 标记
     pub fn append_bos(&self, output: &mut Vec<TokenId>) -> bool {
-        let config: &TokenizerConfig = get_config();
+        let binding = GLOBAL_CONFIG.read().unwrap();
+        let config = binding.as_ref().unwrap();
         if config.add_bos {
             output.push(config.bos);
             return true;
@@ -62,7 +63,8 @@ impl LlmTokenizerBpeSession {
 
     /// 添加 EOS 标记
     pub fn append_eos(&self, output: &mut Vec<TokenId>) -> bool {
-        let config: &TokenizerConfig = get_config();
+        let binding = GLOBAL_CONFIG.read().unwrap();
+        let config = binding.as_ref().unwrap();
         if config.add_eos {
             output.push(config.eos);
             return true;
@@ -72,7 +74,8 @@ impl LlmTokenizerBpeSession {
 
     /// 标记化文本
     pub fn tokenize(&mut self, text: &str, output: &mut Vec<TokenId>) {
-        let config: &TokenizerConfig = get_config();
+        let binding = GLOBAL_CONFIG.read().unwrap();
+        let config = binding.as_ref().unwrap();
         let mut final_prev_index = -1;
         let word_collection = unicode_regex_split(text, &self.tokenizer.regex_exprs);
 
@@ -86,7 +89,7 @@ impl LlmTokenizerBpeSession {
             let mut offset = 0;
 
             // 如果词汇表忽略合并且单词已经在词汇表中
-            if config.ignore_merges && config.text_to_token(word) != NULL {
+            if config.ignore_merges && config.text_to_token(&word) != NULL {
                 //
                 self.symbols.push(LlmSymbol {
                     prev: -1,
@@ -220,7 +223,8 @@ impl LlmTokenizerBpeSession {
 
     /// 添加新的二元组
     pub fn add_new_bigram(&mut self, left: i32, right: i32) {
-        let config: &TokenizerConfig = get_config();
+        let binding = GLOBAL_CONFIG.read().unwrap();
+        let config = binding.as_ref().unwrap();
         if left == -1 || right == -1 {
             return;
         }
@@ -440,7 +444,8 @@ impl<'a> LlmTokenizerSpmSession {
 
     /// 尝试添加新的二元组
     fn try_add_bigram(&mut self, left: i32, right: i32) {
-        let config = get_config();
+        let binding = GLOBAL_CONFIG.read().unwrap();
+        let config = binding.as_ref().unwrap();
         if left == -1 || right == -1 {
             return;
         }
@@ -485,7 +490,8 @@ impl<'a> LlmTokenizerSpmSession {
 
     /// 重新分割符号
     fn resegment(&self, symbol: &LlmSymbol, output: &mut Vec<u32>) {
-        let config = get_config();
+        let binding = GLOBAL_CONFIG.read().unwrap();
+        let config = binding.as_ref().unwrap();
         // 获取符号的文本
         let text = &symbol.text[..symbol.n];
 
