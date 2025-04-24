@@ -15,10 +15,12 @@ pub const NULL: u32 = u32::MAX;
 pub type TokenId = u32;
 pub static GLOBAL_CONFIG: RwLock<Option<TokenizerConfig>> = RwLock::new(None);
 pub static SPM_SESSION: OnceLock<LlmTokenizerSpmSession> = OnceLock::new();
+static QWEN: &str = "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 pub static BPE_SESSION: LazyLock<Mutex<LlmTokenizerBpeSession>> = LazyLock::new(|| {
     // TODO:这里需要
     Mutex::new(LlmTokenizerBpeSession::new(LlmTokenizerBpe {
-        regex_exprs: Vec::new(),
+        // qwen
+        regex_exprs: vec![QWEN.to_string()],
     }))
 });
 pub fn init_spm_session() {

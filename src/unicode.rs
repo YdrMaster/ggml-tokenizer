@@ -45,7 +45,6 @@ pub fn unicode_regex_split(text: &str, regex_exprs: &[String]) -> Vec<String> {
         .any(|regex_expr| k_ucat_enum.keys().any(|&ucat| regex_expr.contains(ucat)));
 
     let cpts = unicode_cpts_from_utf8(text);
-
     // 生成文本的"折叠"表示，其中所有代码点都被替换为单个字节
     let text_collapsed = if need_collapse {
         let mut collapsed = String::with_capacity(cpts.len());
@@ -87,7 +86,6 @@ pub fn unicode_regex_split(text: &str, regex_exprs: &[String]) -> Vec<String> {
         }
 
         // 回退到通用的 regex 库
-        // 在 Rust 中使用 regex 库替代 C++ 的 std::regex / std::wregex
         match process_regex(
             text,
             regex_expr,
@@ -204,8 +202,6 @@ fn process_regex(
         // 使用折叠的文本和正则表达式
         unicode_regex_split_stl(text_collapsed, &regex_expr_collapsed, bpe_offsets)
     } else {
-        // 没有使用 Unicode 类别，我们可以直接使用 regex
-
         // 将文本转换为宽字符串，处理非 ASCII 空白
         let mut wtext = String::new();
         for &cpt in cpts {

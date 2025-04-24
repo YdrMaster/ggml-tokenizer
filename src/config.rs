@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, LinkedList};
 
-use ggus::{GGuf, GGufMetaMapExt};
+use ggus::{GGuf, GGufError, GGufMetaError, GGufMetaMapExt};
 use memmap2::Mmap;
 
 use crate::{
@@ -105,8 +105,29 @@ pub fn load(file: Mmap) {
         VocabType::Ugm => todo!(),
         VocabType::Rwkv => todo!(),
     }
-    // 检查特殊字符special_bos_id等的有效性
+    // 特殊令牌类型的处理
 
+    {
+        let matche_token = |token: Result<u32, GGufMetaError>, target: u32| -> u32 {
+            if token.is_ok() {
+                token.unwrap()
+            } else {
+                target
+            }
+        };
+        config.bos = matche_token(gguf.tokenizer_ggml_eos_token_id(), config.bos);
+        config.eos = matche_token(gguf.tokenizer_ggml_bos_token_id(), config.eos);
+        config.eot = matche_token(gguf.get_u32("tokenizer.ggml.eot_token_id"), config.eot);
+        config.eom = matche_token(gguf.get_u32("tokenizer.ggml.eom_token_id"), config.eom);
+        config.unk = matche_token(gguf.get_u32("tokenizer.ggml.unknown_token_id"), config.unk);
+        config.sep = matche_token(
+            gguf.get_u32("tokenizer.ggml.seperator_token_id"),
+            config.sep,
+        );
+        config.pad = matche_token(gguf.get_u32("tokenizer.ggml.padding_token_id"), config.pad);
+        // config.mask=matche_token(gguf.tokenizer_ggml_mask_token_id(),config.mask);
+        //  TODO 部分未使用的暂未实现
+    }
     // 判断模型是否有 add_bos   add_eos
     {
         config.add_space_prefix = get_bool(
@@ -117,140 +138,6 @@ pub fn load(file: Mmap) {
             gguf.get_str("tokenizer.ggml.add_eos_token").is_ok(),
             config.add_space_prefix,
         );
-    }
-    // 为特殊token值为null构建字符,高度类似，能偶抽象成方法或者声明宏
-    for (key, value) in &token_to_id {
-        if config.eot == NULL {
-            if key == "<|eot_id|>"
-                || key == "<|im_end|>"
-                || key == "<|end|>"
-                || key == "<end_of_turn>"
-                || key == "<|endoftext|>"
-                || key == "< EOT >"
-                || key == "_< EOT >"
-                || key == "<｜end▁of▁sentence｜>"
-            // DeepSeek
-            {
-                config.eos = *value;
-                if (id_to_token[*value as usize].attribute as i32 & TokenAttribute::Control as i32)
-                    == 0
-                {
-                    id_to_token[*value as usize].attribute = TokenAttribute::Control;
-                }
-            }
-        }
-        if config.eom == NULL {
-            if key == "<|eom_id|>" {
-                config.eom = *value;
-                if (id_to_token[*value as usize].attribute as i32 & TokenAttribute::Control as i32)
-                    == 0
-                {
-                    id_to_token[*value as usize].attribute = TokenAttribute::Control;
-                }
-            }
-        }
-        if config.fim_pre == NULL {
-            if key == "<|fim_prefix|>" // Qwen
-                || key == "<fim-prefix>"
-                || key == "<｜fim▁begin｜>" // DeepSeek
-                || key == "<PRE>"
-                || key == "▁<PRE>"
-            {
-                config.fim_pre = *value;
-                if (id_to_token[*value as usize].attribute as i32 & TokenAttribute::Control as i32)
-                    == 0
-                {
-                    id_to_token[*value as usize].attribute = TokenAttribute::Control;
-                }
-            }
-        }
-        if config.fim_suf == NULL {
-            if key == "<|fim_suffix|>" // Qwen
-            || key == "<fim-suffix>"
-            || key == "<｜fim▁hole｜>" // DeepSeek
-            || key == "<SUF>"
-            || key == "▁<SUF>"
-            // CodeLlama
-            {
-                config.fim_suf = *value;
-                if (id_to_token[*value as usize].attribute as i32 & TokenAttribute::Control as i32)
-                    == 0
-                {
-                    id_to_token[*value as usize].attribute = TokenAttribute::Control;
-                }
-            }
-        }
-        if config.fim_mid == NULL {
-            if key == "<|fim_middle|>" // Qwen
-            || key == "<fim-middle>"
-            || key == "<｜fim▁end｜>" // DeepSeek
-            || key == "<MID>"
-            || key == "▁<MID>"
-            // CodeLlama
-            {
-                config.fim_mid = *value;
-                if (id_to_token[*value as usize].attribute as i32 & TokenAttribute::Control as i32)
-                    == 0
-                {
-                    id_to_token[*value as usize].attribute = TokenAttribute::Control;
-                }
-            }
-        }
-        if config.fim_mid == NULL {
-            if key== "<|fim_middle|>" // Qwen
-            || key== "<fim-middle>"
-            || key== "<｜fim▁end｜>"  // DeepSeek
-            || key== "<MID>"
-            || key== "▁<MID>"
-            // CodeLlama
-            {
-                config.fim_mid = *value;
-                if (id_to_token[*value as usize].attribute as i32 & TokenAttribute::Control as i32)
-                    == 0
-                {
-                    id_to_token[*value as usize].attribute = TokenAttribute::Control;
-                }
-            }
-        }
-        if config.fim_pad == NULL {
-            if key == "<|fim_pad|>" // Qwen
-                || key == "<fim-pad>"
-                || key == "<PAD>"
-            {
-                config.fim_pad = *value;
-                if (id_to_token[*value as usize].attribute as i32 & TokenAttribute::Control as i32)
-                    == 0
-                {
-                    id_to_token[*value as usize].attribute = TokenAttribute::Control;
-                }
-            }
-        }
-        if config.fim_rep == NULL {
-            if key == "<|fim_repo|>"  // Qwen
-            || key == "<|repo_name|>"
-            || key == "<fim-repo>"
-            || key == "<REPO>"
-            {
-                config.fim_rep = *value;
-                if (id_to_token[*value as usize].attribute as i32 & TokenAttribute::Control as i32)
-                    == 0
-                {
-                    id_to_token[*value as usize].attribute = TokenAttribute::Control;
-                }
-            }
-        }
-        if config.fim_sep == NULL {
-            if key == "<|file_sep|>"
-            // Qwen
-            {
-                config.fim_sep = *value;
-                if (id_to_token[*value as usize].attribute as i32 & TokenAttribute::Control as i32)
-                    == 0
-                {
-                    id_to_token[*value as usize].attribute = TokenAttribute::Control;
-                }
-            }
-        }
     }
 
     let mut special_eog_ids = HashSet::new();
@@ -528,6 +415,9 @@ impl TokenizerConfig {
             }
             VocabType::Bpe => {
                 let mut session_ref = BPE_SESSION.lock().unwrap();
+                if add_special {
+                    session_ref.append_bos(&mut output);
+                }
                 for fragment in buffer.iter_mut() {
                     if fragment.variant_type == FragmentBufferVariantType::RawText {
                         let substring = &fragment.raw_text[(fragment.offset as usize)
@@ -692,6 +582,15 @@ impl std::fmt::Debug for TokenizerConfig {
             .field("vocab_type", &self.vocab_type)
             .field("bos", &self.bos)
             .field("eos", &self.eos)
+            .field("eot", &self.eot)
+            .field("pad", &self.pad)
+            .field("linefeed", &self.linefeed)
+            .field("fim_pre", &self.fim_pre)
+            .field("fim_suf", &self.fim_suf)
+            .field("fim_mid", &self.fim_mid)
+            .field("fim_pad", &self.fim_pad)
+            .field("fim_rep", &self.fim_rep)
+            .field("fim_sep", &self.fim_sep)
             .field("add_bos", &self.add_bos)
             .field("add_eos", &self.add_eos)
             .field("add_space_prefix", &self.add_space_prefix)
