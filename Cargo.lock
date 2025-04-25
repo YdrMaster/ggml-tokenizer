@@ -301,6 +301,7 @@ dependencies = [
 name = "try-tokenize"
 version = "0.1.0"
 dependencies = [
+ "fancy-regex",
  "ggus",
  "log",
  "memmap2",

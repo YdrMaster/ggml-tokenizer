@@ -59,8 +59,6 @@ pub fn unicode_regex_split(text: &str, regex_exprs: &[String]) -> Vec<String> {
             let flags = unicode_cpt_flags_from_cpt(cpt);
 
             if flags.is_whitespace {
-                // 注意：C++ std::regex \s 不匹配 0x85，但 Rust 和 Python 正则表达式匹配
-                // collapsed.push(0x85 as char);  // <Next Line> 作为空白回退
                 collapsed.push(0x0B as char); // <vertical tab> 作为空白回退
             } else if let Some(&cat_char) = k_ucat_cpt.get(&flags.category_flag()) {
                 collapsed.push(cat_char as char);
@@ -172,8 +170,8 @@ fn process_regex(
                 && regex_expr.chars().nth(i + 2).unwrap() == '{'
                 && regex_expr.chars().nth(i + 4).unwrap() == '}'
             {
-                let pat = &regex_expr[i..i + 5];
-                if let Some(&cat_flag) = k_ucat_enum.get(pat) {
+                let pat = format!("\\p{{{}}}", regex_expr.chars().nth(i + 3).unwrap());
+                if let Some(&cat_flag) = k_ucat_enum.get(pat.as_str()) {
                     if !inside {
                         regex_expr_collapsed.push('[');
                     }
@@ -194,7 +192,6 @@ fn process_regex(
                     continue;
                 }
             }
-
             regex_expr_collapsed.push(c);
             i += 1;
         }
@@ -222,7 +219,7 @@ fn unicode_regex_split_stl(
     regex_expr: &str,
     offsets: &[usize],
 ) -> Result<Vec<usize>, String> {
-    use regex::Regex;
+    use fancy_regex::Regex;
 
     let expr = Regex::new(regex_expr).map_err(|e| e.to_string())?;
     let mut bpe_offsets = Vec::with_capacity(offsets.len());
@@ -233,12 +230,12 @@ fn unicode_regex_split_stl(
         let mut start_idx = 0;
 
         for cap in expr.captures_iter(text_slice) {
-            let m = cap.get(0).unwrap();
+            let m = cap.unwrap().get(0).unwrap();
             if m.start() > start_idx {
                 bpe_offsets.push(m.start() - start_idx);
             }
-            bpe_offsets.push(m.len());
-            start_idx = m.start() + m.len();
+            bpe_offsets.push(m.range().len());
+            start_idx = m.start() + m.range().len();
         }
 
         if start_idx < offset as usize {
@@ -666,7 +663,6 @@ fn unicode_cpt_flags_from_cpt(cpt: u32) -> unicode_cpt_flags {
     // 在实际实现中，您可能需要查询 Unicode 数据表
     let mut flags = unicode_cpt_flags::default();
 
-    // 简单示例实现
     if (cpt >= '0' as u32 && cpt <= '9' as u32) {
         flags.is_number = true;
     } else if (cpt >= 'a' as u32 && cpt <= 'z' as u32) || (cpt >= 'A' as u32 && cpt <= 'Z' as u32) {

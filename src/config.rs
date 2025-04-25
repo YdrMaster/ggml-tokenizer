@@ -79,6 +79,8 @@ pub fn load(file: Mmap) {
 
         token_to_id.insert(text, i as u32);
     }
+    config.token_to_id = token_to_id.clone();
+    config.id_to_token = id_to_token.clone();
     // 第一次初始化 GLOBAL_CONFIG，以供tokenize使用
     {
         let mut global_config = GLOBAL_CONFIG.write().unwrap();
@@ -420,9 +422,13 @@ impl TokenizerConfig {
                 }
                 for fragment in buffer.iter_mut() {
                     if fragment.variant_type == FragmentBufferVariantType::RawText {
-                        let substring = &fragment.raw_text[(fragment.offset as usize)
-                            ..(fragment.offset + fragment.length) as usize];
-                        session_ref.tokenize(substring, &mut output);
+                        let substring: String = fragment
+                        .raw_text
+                        .chars()
+                        .skip(fragment.offset as usize)
+                        .take(fragment.length as usize)
+                        .collect();
+                        session_ref.tokenize(substring.as_str(), &mut output);
                     } else {
                         session_ref.append_bos(&mut output);
                     }
