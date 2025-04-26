@@ -78,7 +78,7 @@ impl LlmTokenizerBpeSession {
         let config = binding.as_ref().unwrap();
         let mut final_prev_index = -1;
         let word_collection = unicode_regex_split(text, &self.tokenizer.regex_exprs);
-
+        todo!();
         self.symbols_final.clear();
 
         for word in word_collection {

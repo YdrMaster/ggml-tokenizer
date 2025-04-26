@@ -39,213 +39,110 @@ pub fn unicode_regex_split(text: &str, regex_exprs: &[String]) -> Vec<String> {
     .cloned()
     .collect();
 
-    // 检查是否需要折叠代码点
-    let need_collapse = regex_exprs
-        .iter()
-        .any(|regex_expr| k_ucat_enum.keys().any(|&ucat| regex_expr.contains(ucat)));
-
-    let cpts = unicode_cpts_from_utf8(text);
-    // 生成文本的"折叠"表示，其中所有代码点都被替换为单个字节
-    let text_collapsed = if need_collapse {
-        let mut collapsed = String::with_capacity(cpts.len());
-
-        for &cpt in &cpts {
-            // 保持单字节代码点不变
-            if cpt < 128 {
-                collapsed.push(cpt as u8 as char);
-                continue;
-            }
-
-            let flags = unicode_cpt_flags_from_cpt(cpt);
-
-            if flags.is_whitespace {
-                collapsed.push(0x0B as char); // <vertical tab> 作为空白回退
-            } else if let Some(&cat_char) = k_ucat_cpt.get(&flags.category_flag()) {
-                collapsed.push(cat_char as char);
-            } else {
-                collapsed.push(0xD0 as char); // 回退
-            }
-        }
-
-        collapsed
-    } else {
-        String::new()
-    };
-
-    let mut bpe_offsets = vec![cpts.len()];
-
-    for regex_expr in regex_exprs {
-        // 首先，查看是否有高效的自定义正则表达式实现
-        let tmp = unicode_regex_split_custom(text, regex_expr, &bpe_offsets);
-
-        if !tmp.is_empty() {
-            bpe_offsets = tmp;
-            continue;
-        }
-
-        // 回退到通用的 regex 库
-        match process_regex(
-            text,
-            regex_expr,
-            &text_collapsed,
-            &cpts,
-            &k_ucat_enum,
-            &k_ucat_cpt,
-            &k_ucat_map,
-            &bpe_offsets,
-        ) {
-            Ok(offsets) => bpe_offsets = offsets,
-            Err(e) => {
-                eprintln!("Failed to process regex: '{}'", regex_expr);
-                eprintln!("Regex error: {}", e);
-                panic!("Failed to process regex");
-            }
-        }
-    }
-
-    let mut bpe_words = Vec::with_capacity(bpe_offsets.len());
-
-    let mut start = 0;
-    for &offset in &bpe_offsets {
-        let mut word = String::new();
-        for i in start..(start + offset) {
-            word.push_str(&unicode_cpt_to_utf8(cpts[i]));
-        }
-        bpe_words.push(word);
-        start += offset;
-    }
-
-    unicode_byte_encoding_process(&bpe_words)
+    let tmp = process_regex(
+        &regex_exprs[0],
+        text,
+        &k_ucat_enum,
+        &k_ucat_cpt,
+        &k_ucat_map,
+    );
+    unicode_byte_encoding_process(&tmp)
 }
 
 /// 处理正则表达式
 fn process_regex(
-    text: &str,
     regex_expr: &str,
-    text_collapsed: &str,
-    cpts: &[u32],
+    text: &str,
     k_ucat_enum: &HashMap<&str, u32>,
     k_ucat_cpt: &HashMap<u32, u8>,
     k_ucat_map: &HashMap<u32, &str>,
-    bpe_offsets: &[usize],
-) -> Result<Vec<usize>, String> {
-    // 检查正则表达式是否使用了 Unicode 类别
-    let use_collapsed = k_ucat_enum.keys().any(|&ucat| regex_expr.contains(ucat));
+) -> Vec<String> {
+    // 生成正则表达式的折叠表示
+    let mut regex_expr_collapsed = String::new();
 
-    if use_collapsed {
-        // 检查原始正则表达式是否包含非 ASCII 字符
-        let cpts_regex = unicode_cpts_from_utf8(regex_expr);
-        for &cpt in &cpts_regex {
-            if cpt >= 128 {
-                return Err("Regex includes both unicode categories and non-ASCII characters - not supported".to_string());
-            }
-        }
+    let mut inside = false;
+    let mut i = 0;
+    while i < regex_expr.len() {
+        let c = regex_expr.chars().nth(i).unwrap();
 
-        // 生成正则表达式的折叠表示
-        let mut regex_expr_collapsed = String::new();
-
-        // 跟踪我们是否在 [] 内，因为不允许嵌套 []
-        let mut inside = false;
-        let mut i = 0;
-        while i < regex_expr.len() {
-            let c = regex_expr.chars().nth(i).unwrap();
-
-            if c == '[' && (i == 0 || regex_expr.chars().nth(i - 1).unwrap() != '\\') {
-                regex_expr_collapsed.push('[');
-                inside = true;
-                i += 1;
-                continue;
-            }
-
-            if inside && c == ']' && regex_expr.chars().nth(i - 1).unwrap() != '\\' {
-                regex_expr_collapsed.push(']');
-                inside = false;
-                i += 1;
-                continue;
-            }
-
-            if i + 4 < regex_expr.len()
-                && regex_expr.chars().nth(i).unwrap() == '\\'
-                && regex_expr.chars().nth(i + 1).unwrap() == 'p'
-                && regex_expr.chars().nth(i + 2).unwrap() == '{'
-                && regex_expr.chars().nth(i + 4).unwrap() == '}'
-            {
-                let pat = format!("\\p{{{}}}", regex_expr.chars().nth(i + 3).unwrap());
-                if let Some(&cat_flag) = k_ucat_enum.get(pat.as_str()) {
-                    if !inside {
-                        regex_expr_collapsed.push('[');
-                    }
-
-                    if let Some(&cat_char) = k_ucat_cpt.get(&cat_flag) {
-                        regex_expr_collapsed.push(cat_char as char);
-                    }
-
-                    if let Some(&cat_map) = k_ucat_map.get(&cat_flag) {
-                        regex_expr_collapsed.push_str(cat_map);
-                    }
-
-                    if !inside {
-                        regex_expr_collapsed.push(']');
-                    }
-
-                    i += 5;
-                    continue;
-                }
-            }
-            regex_expr_collapsed.push(c);
+        if c == '[' && (i == 0 || regex_expr.chars().nth(i - 1).unwrap() != '\\') {
+            regex_expr_collapsed.push('[');
+            inside = true;
             i += 1;
+            continue;
         }
 
-        // 使用折叠的文本和正则表达式
-        unicode_regex_split_stl(text_collapsed, &regex_expr_collapsed, bpe_offsets)
-    } else {
-        // 将文本转换为宽字符串，处理非 ASCII 空白
-        let mut wtext = String::new();
-        for &cpt in cpts {
-            if cpt > 0x7F && unicode_cpt_flags_from_cpt(cpt).is_whitespace {
-                wtext.push(0x0B as char);
-            } else {
-                wtext.push(char::from_u32(cpt).unwrap_or('�'));
+        if inside && c == ']' && regex_expr.chars().nth(i - 1).unwrap() != '\\' {
+            regex_expr_collapsed.push(']');
+            inside = false;
+            i += 1;
+            continue;
+        }
+
+        if i + 4 < regex_expr.len()
+            && regex_expr.chars().nth(i).unwrap() == '\\'
+            && regex_expr.chars().nth(i + 1).unwrap() == 'p'
+            && regex_expr.chars().nth(i + 2).unwrap() == '{'
+            && regex_expr.chars().nth(i + 4).unwrap() == '}'
+        {
+            let pat = format!("\\p{{{}}}", regex_expr.chars().nth(i + 3).unwrap());
+            if let Some(&cat_flag) = k_ucat_enum.get(pat.as_str()) {
+                if !inside {
+                    regex_expr_collapsed.push('[');
+                }
+
+                if let Some(&cat_char) = k_ucat_cpt.get(&cat_flag) {
+                    regex_expr_collapsed.push(cat_char as char);
+                }
+
+                if let Some(&cat_map) = k_ucat_map.get(&cat_flag) {
+                    regex_expr_collapsed.push_str(cat_map);
+                }
+
+                if !inside {
+                    regex_expr_collapsed.push(']');
+                }
+
+                i += 5;
+                continue;
             }
         }
-
-        unicode_regex_split_stl(&wtext, regex_expr, bpe_offsets)
+        regex_expr_collapsed.push(c);
+        i += 1;
     }
-}
 
-/// 使用 Rust 的 regex 库分割文本
-fn unicode_regex_split_stl(
-    text: &str,
-    regex_expr: &str,
-    offsets: &[usize],
-) -> Result<Vec<usize>, String> {
+    // 使用折叠的文本和正则表达式
     use fancy_regex::Regex;
 
-    let expr = Regex::new(regex_expr).map_err(|e| e.to_string())?;
-    let mut bpe_offsets = Vec::with_capacity(offsets.len());
+    match Regex::new(&regex_expr_collapsed) {
+        Ok(re) => {
+            // 使用正则表达式分割文本
+            let mut result = Vec::new();
+            let mut last_end = 0;
 
-    let mut start = 0;
-    for &offset in offsets {
-        let text_slice = &text[start..start + offset];
-        let mut start_idx = 0;
-
-        for cap in expr.captures_iter(text_slice) {
-            let m = cap.unwrap().get(0).unwrap();
-            if m.start() > start_idx {
-                bpe_offsets.push(m.start() - start_idx);
+            for cap_result in re.captures_iter(text) {
+                if let Ok(cap) = cap_result {
+                    if let Some(m) = cap.get(0) {
+                        // 如果匹配前有未匹配的文本，添加到结果中
+                        if m.start() > last_end {
+                            result.push(text[last_end..m.start()].to_string());
+                        }
+                        // 添加匹配的文本
+                        result.push(text[m.start()..m.end()].to_string());
+                        last_end = m.end();
+                    }
+                }
             }
-            bpe_offsets.push(m.range().len());
-            start_idx = m.start() + m.range().len();
-        }
 
-        if start_idx < offset as usize {
-            bpe_offsets.push(offset - start_idx);
-        }
+            // 添加最后一部分未匹配的文本
+            if last_end < text.len() {
+                result.push(text[last_end..].to_string());
+            }
 
-        start += offset;
+            result
+        }
+        Err(_) => panic!(), // 返回空向量表示正则表达式错误
     }
-
-    Ok(bpe_offsets)
 }
 
 /// 自定义正则表达式分割实现
@@ -650,12 +547,42 @@ impl unicode_cpt_flags {
 fn unicode_cpts_from_utf8(text: &str) -> Vec<u32> {
     text.chars().map(|c| c as u32).collect()
 }
+/// 将 Unicode 码点转换为 UTF-8 编码的字符串
+fn unicode_cpt_to_utf8(cpt: u32) -> Result<String, &'static str> {
+    let mut result = String::new();
 
-fn unicode_cpt_to_utf8(cpt: u32) -> String {
-    match char::from_u32(cpt) {
-        Some(c) => c.to_string(),
-        None => "�".to_string(),
+    if cpt <= 0x7f {
+        // 单字节 ASCII 字符
+        result.push(cpt as u8 as char);
+        return Ok(result);
     }
+
+    if cpt >= 0x80 && cpt <= 0x7ff {
+        // 双字节字符
+        result.push((0xc0 | ((cpt >> 6) & 0x1f)) as u8 as char);
+        result.push((0x80 | (cpt & 0x3f)) as u8 as char);
+        return Ok(result);
+    }
+
+    if cpt >= 0x800 && cpt <= 0xffff {
+        // 三字节字符
+        result.push((0xe0 | ((cpt >> 12) & 0x0f)) as u8 as char);
+        result.push((0x80 | ((cpt >> 6) & 0x3f)) as u8 as char);
+        result.push((0x80 | (cpt & 0x3f)) as u8 as char);
+        return Ok(result);
+    }
+
+    if cpt >= 0x10000 && cpt <= 0x10ffff {
+        // 四字节字符
+        result.push((0xf0 | ((cpt >> 18) & 0x07)) as u8 as char);
+        result.push((0x80 | ((cpt >> 12) & 0x3f)) as u8 as char);
+        result.push((0x80 | ((cpt >> 6) & 0x3f)) as u8 as char);
+        result.push((0x80 | (cpt & 0x3f)) as u8 as char);
+        return Ok(result);
+    }
+
+    // 无效的码点
+    Err("无效的码点")
 }
 
 fn unicode_cpt_flags_from_cpt(cpt: u32) -> unicode_cpt_flags {
@@ -694,11 +621,49 @@ fn unicode_tolower(cpt: u32) -> u32 {
 }
 
 pub fn unicode_byte_to_utf8(byte: u8) -> String {
-    String::from(byte as char)
+    let map = unicode_byte_to_utf8_map();
+    println!("{:?}", map.get(&10).unwrap());
+    map.get(&byte).unwrap().to_string()
 }
+/// 创建一个从字节到 UTF-8 字符串的映射
+fn unicode_byte_to_utf8_map() -> HashMap<u8, char> {
+    let mut map = HashMap::new();
 
+    // 映射 ASCII 可打印字符 '!' 到 '~'
+    for ch in 0x21..=0x7E {
+        map.insert(ch as u8, char::from_u32(ch).unwrap());
+    }
+
+    // 映射拉丁字符 '¡' 到 '¬'
+    for ch in 0xA1..=0xAC {
+        map.insert(ch as u8, char::from_u32(ch).unwrap());
+    }
+
+    // 映射拉丁字符 '®' 到 'ÿ'
+    for ch in 0xAE..=0xFF {
+        map.insert(ch as u8, char::from_u32(ch).unwrap());
+    }
+
+    // 为剩余的字节值分配映射
+    let mut n = 0;
+    for ch in 0..256 {
+        if !map.contains_key(&(ch as u8)) {
+            map.insert(ch as u8, char::from_u32(256 + n).unwrap());
+            n += 1;
+        }
+    }
+
+    map
+}
 fn unicode_byte_encoding_process(bpe_words: &[String]) -> Vec<String> {
-    bpe_words.to_vec()
+    bpe_words
+        .into_iter()
+        .map(|word: &String| {
+            word.chars()
+                .map(|ch| unicode_byte_to_utf8(ch as u8))
+                .collect()
+        })
+        .collect()
 }
 
 /// 获取 UTF-8 字符的长度

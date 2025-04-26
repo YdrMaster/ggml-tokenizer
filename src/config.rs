@@ -423,11 +423,11 @@ impl TokenizerConfig {
                 for fragment in buffer.iter_mut() {
                     if fragment.variant_type == FragmentBufferVariantType::RawText {
                         let substring: String = fragment
-                        .raw_text
-                        .chars()
-                        .skip(fragment.offset as usize)
-                        .take(fragment.length as usize)
-                        .collect();
+                            .raw_text
+                            .chars()
+                            .skip(fragment.offset as usize)
+                            .take(fragment.length as usize)
+                            .collect();
                         session_ref.tokenize(substring.as_str(), &mut output);
                     } else {
                         session_ref.append_bos(&mut output);
