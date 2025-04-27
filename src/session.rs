@@ -78,44 +78,35 @@ impl LlmTokenizerBpeSession {
         let config = binding.as_ref().unwrap();
         let mut final_prev_index = -1;
         let word_collection = unicode_regex_split(text, &self.tokenizer.regex_exprs);
-        todo!();
         self.symbols_final.clear();
 
         for word in word_collection {
             self.work_queue = LlmBigramBpe::new();
             self.symbols.clear();
 
-            let mut index = 0;
-            let mut offset = 0;
-
             // 如果词汇表忽略合并且单词已经在词汇表中
             if config.ignore_merges && config.text_to_token(&word) != NULL {
-                //
+                todo!();
                 self.symbols.push(LlmSymbol {
                     prev: -1,
                     next: -1,
                     text: word.to_string(),
                     n: word.len(),
                 });
-                offset = word.len();
             }
 
             // 将单词分割为 UTF-8 字符
-            while offset < word.len() {
-                let char_len =
-                    (word.len() - offset).min(unicode_len_utf8(word.as_bytes()[offset]) as usize);
+            for (i, c) in word.char_indices() {
                 let sym = LlmSymbol {
                     text: word.to_string(),
-                    n: char_len,
-                    prev: index - 1,
-                    next: if offset + char_len == word.len() {
+                    n: c.len_utf8(),
+                    prev: i as i32 - 1,
+                    next: if i == word.chars().count() {
                         -1
                     } else {
-                        index + 1
+                        i as i32 + 1
                     },
                 };
-                offset += sym.n;
-                index += 1;
                 self.symbols.push(sym);
             }
 
@@ -138,16 +129,8 @@ impl LlmTokenizerBpeSession {
                     continue;
                 }
 
-                // 创建左右标记的字符串
-                let left_token =
-                    String::from_utf8_lossy(&left_symbol.text.as_bytes()[..left_symbol.n])
-                        .to_string();
-                let right_token =
-                    String::from_utf8_lossy(&right_symbol.text.as_bytes()[..right_symbol.n])
-                        .to_string();
-
                 // 检查二元组是否过时
-                if left_token + &right_token != bigram.text {
+                if format!("{}{}", &left_symbol.text, &right_symbol.text) != bigram.text {
                     continue;
                 }
 
@@ -223,15 +206,14 @@ impl LlmTokenizerBpeSession {
 
     /// 添加新的二元组
     pub fn add_new_bigram(&mut self, left: i32, right: i32) {
-        let binding = GLOBAL_CONFIG.read().unwrap();
-        let config = binding.as_ref().unwrap();
         if left == -1 || right == -1 {
             return;
         }
-
+        let binding = GLOBAL_CONFIG.read().unwrap();
+        let config = binding.as_ref().unwrap();
         let left_token = &self.symbols[left as usize].text[..self.symbols[left as usize].n];
         let right_token = &self.symbols[right as usize].text[..self.symbols[right as usize].n];
-
+        todo!("以下未测试");
         let mut rank_found = -1;
 
         rank_found = config.find_bpe_rank(left_token, right_token);
