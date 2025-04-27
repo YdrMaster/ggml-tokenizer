@@ -622,7 +622,6 @@ fn unicode_tolower(cpt: u32) -> u32 {
 
 pub fn unicode_byte_to_utf8(byte: u8) -> String {
     let map = unicode_byte_to_utf8_map();
-    println!("{:?}", map.get(&10).unwrap());
     map.get(&byte).unwrap().to_string()
 }
 /// 创建一个从字节到 UTF-8 字符串的映射
