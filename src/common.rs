@@ -1,3 +1,4 @@
+use std::pin::Pin;
 use std::sync::Arc;
 
 use std::sync::LazyLock;
@@ -13,7 +14,7 @@ use crate::{
 
 pub const NULL: u32 = u32::MAX;
 pub type TokenId = u32;
-pub static GLOBAL_CONFIG: RwLock<Option<TokenizerConfig>> = RwLock::new(None);
+pub static GLOBAL_CONFIG: RwLock<Option<Pin<&'static TokenizerConfig>>> = RwLock::new(None);
 pub static SPM_SESSION: OnceLock<LlmTokenizerSpmSession> = OnceLock::new();
 static QWEN: &str = "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 pub static BPE_SESSION: LazyLock<Mutex<LlmTokenizerBpeSession>> = LazyLock::new(|| {
@@ -48,4 +49,12 @@ pub enum TokenAttribute {
     LStrIp = 1 << 7,
     RStrIp = 1 << 8,
     SingleWord = 1 << 9,
+}
+
+impl From<i32> for TokenAttribute {
+    fn from(value: i32) -> Self {
+        // 这里我们简单地使用 unsafe 将 i32 转换为 TokenAttribute
+        // 因为我们已经使用 #[repr(i32)] 确保了内存布局兼容
+        unsafe { std::mem::transmute(value) }
+    }
 }

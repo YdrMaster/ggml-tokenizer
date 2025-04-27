@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet, LinkedList};
+use std::{
+    collections::{HashMap, HashSet, LinkedList},
+    pin::Pin,
+};
 
 use ggus::{GGuf, GGufError, GGufMetaError, GGufMetaMapExt};
 use memmap2::Mmap;
@@ -57,19 +60,25 @@ pub fn load(file: Mmap) {
     let token_type = gguf
         .tokenizer_ggml_token_type()
         .ok()
-        .map(|arr| arr.map(|r| r.unwrap()).collect::<Vec<_>>());
+        .map(|arr| arr.map(|r| r.unwrap()).collect::<Vec<_>>())
+        .unwrap();
 
     let mut id_to_token = Vec::with_capacity(tokens.len());
+
     let mut token_to_id: HashMap<String, TokenId> = HashMap::with_capacity(tokens.len());
 
     for (i, text) in tokens.into_iter().enumerate() {
         let text = text.unwrap().to_string();
         let score = scores.as_ref().map_or(0.0, |s| s[i]);
-        let attribute = token_type
-            .as_ref()
-            .map_or(TokenAttribute::Normal, |t| unsafe {
-                std::mem::transmute(t[i])
-            });
+        let attribute = match token_type[i] {
+            1 => TokenAttribute::Normal,
+            2 => TokenAttribute::Unknown,
+            3 => TokenAttribute::Control,
+            4 => TokenAttribute::UserDefined,
+            5 => TokenAttribute::Unused,
+            6 => TokenAttribute::Byte,
+            _ => TokenAttribute::Undefined,
+        };
 
         id_to_token.push(TokenData {
             text: text.clone(),
@@ -82,11 +91,12 @@ pub fn load(file: Mmap) {
     config.token_to_id = token_to_id.clone();
     config.id_to_token = id_to_token.clone();
     // 第一次初始化 GLOBAL_CONFIG，以供tokenize使用
+    // 第一次初始化
     {
         let mut global_config = GLOBAL_CONFIG.write().unwrap();
-        *global_config = Some(config.clone());
+        *global_config = Some(unsafe { Pin::new_unchecked(std::mem::transmute(&config)) });
     }
-    // TODO 待完善 linefeed_id 暂时不支持SPM  构造换行符
+    // 待完善 linefeed_id 暂时不支持SPM  构造换行符
     match config.vocab_type {
         VocabType::None | VocabType::Bpe => {
             let ids = config.tokenize("\n", false, false);
@@ -333,28 +343,31 @@ pub fn load(file: Mmap) {
             }
         }
     }
-    // 收集特殊token
+
     config.special_tokens = id_to_token
         .iter()
         .enumerate() // 获取索引 (TokenId) 和 TokenData
         .filter(|(_, token_data)| {
             // 检查 token 的属性是否为 Control, UserDefined 或 Unknown
-            let attr_val = token_data.attribute as i32;
-            let special_mask = TokenAttribute::Control as i32
-                | TokenAttribute::UserDefined as i32
-                | TokenAttribute::Unknown as i32;
-            (attr_val & special_mask) != 0
+            match token_data.attribute {
+                TokenAttribute::Control | TokenAttribute::UserDefined | TokenAttribute::Unknown => {
+                    true
+                }
+                _ => false,
+            }
         })
         .map(|(index, _)| index as TokenId) // 提取符合条件的 TokenId (索引)
         .collect(); // 收集到 Vec<TokenId> 中
-
     config.token_to_id = token_to_id;
     config.id_to_token = id_to_token;
     config.bpe_ranks = bpe_ranks;
     //  第二次初始化，加载全部信息
     {
-        let mut global_config = GLOBAL_CONFIG.write().unwrap();
-        *global_config = Some(config.clone());
+        // 最后一次初始化
+        {
+            let mut global_config = GLOBAL_CONFIG.write().unwrap();
+            *global_config = Some(Pin::new(Box::leak(Box::new(config))));
+        }
     }
 }
 

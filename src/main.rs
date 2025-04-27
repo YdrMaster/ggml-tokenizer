@@ -15,14 +15,15 @@ mod session;
 mod unicode;
 mod untils;
 fn main() {
+    let prompt = "Hello my name is";
     let path = std::env::args_os().nth(1).unwrap();
     let file = File::open(path).unwrap();
     let file = unsafe { Mmap::map(&file) }.unwrap();
     load(file);
     let binding = GLOBAL_CONFIG.read().unwrap();
     let config = binding.as_ref().unwrap();
-    print!("{:?}", config)
-
+    // let tmp=config.tokenize(prompt, true, true);
+    // print!("test {:?}", tmp);
     // println!("{}", gguf.general_architecture().unwrap())
 }
 
