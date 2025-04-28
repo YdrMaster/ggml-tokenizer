@@ -16,17 +16,11 @@ use crate::{
 //  load 函数 默认都是gpt2
 pub fn load(file: Mmap) {
     let gguf = GGuf::new(&file).unwrap();
-
+    // 添加多模型支持需要根据 tokenizer_ggml_mode 和tokenizer.ggml.pre对词表进行不同的初始化
     let model = gguf.tokenizer_ggml_model().unwrap();
-    // 初始化session
-    println!("tokenizer model = {model}");
-    assert_eq!(model, "gpt2");
 
     let mut config = TokenizerConfig::new();
-    // 此处等同于llama.cpp的合并
-    let bpe_ranks = load_gpt2(&gguf);
 
-    println!("gpt2 n rank = {}", bpe_ranks.len());
     // 设置预设字段
     config.bos = 11;
     config.eos = 11;
@@ -40,14 +34,68 @@ pub fn load(file: Mmap) {
     // gpt2 默认填充规则  LLAMA_VOCAB_PRE_TYPE_GPT2
     config.vocab_type = VocabType::Bpe;
     // 检查是是否有填充字段，
-    // ggml 库中需要添加
-    config.add_space_prefix = gguf
-        .get_bool("tokenizer.ggml.add_space_prefix")
-        .unwrap_or(false);
-    // remove_extra_whitespaces
-    config.remove_extra_whitespaces = gguf
-        .get_bool("tokenizer.ggml.remove_extra_whitespaces")
-        .unwrap_or(false);
+
+    // 加载特殊字符
+    {
+        // SPM进行分词需要
+        config.add_space_prefix = gguf
+            .get_bool("tokenizer.ggml.add_space_prefix")
+            .unwrap_or(false);
+        // remove_extra_whitespaces
+        config.remove_extra_whitespaces = gguf
+            .get_bool("tokenizer.ggml.remove_extra_whitespaces")
+            .unwrap_or(false);
+
+        let matche_token = |token: Result<u32, GGufMetaError>, target: u32| -> u32 {
+            if token.is_ok() {
+                token.unwrap()
+            } else {
+                target
+            }
+        };
+        config.bos = matche_token(gguf.tokenizer_ggml_bos_token_id(), config.bos);
+        config.eos = matche_token(gguf.tokenizer_ggml_eos_token_id(), config.eos);
+        config.eot = matche_token(gguf.get_u32("tokenizer.ggml.eot_token_id"), config.eot);
+        config.eom = matche_token(gguf.get_u32("tokenizer.ggml.eom_token_id"), config.eom);
+        config.unk = matche_token(gguf.get_u32("tokenizer.ggml.unknown_token_id"), config.unk);
+        config.sep = matche_token(
+            gguf.get_u32("tokenizer.ggml.seperator_token_id"),
+            config.sep,
+        );
+        config.pad = matche_token(gguf.get_u32("tokenizer.ggml.padding_token_id"), config.pad);
+        config.mask = matche_token(gguf.get_u32("tokenizer.ggml.mask_token_id"), config.mask);
+        config.fim_pre = matche_token(
+            gguf.get_u32("tokenizer.ggml.fim_pre_token_id"),
+            config.fim_pre,
+        );
+        config.fim_suf = matche_token(
+            gguf.get_u32("tokenizer.ggml.fim_suf_token_id"),
+            config.fim_suf,
+        );
+        config.fim_mid = matche_token(
+            gguf.get_u32("tokenizer.ggml.fim_mid_token_id"),
+            config.fim_mid,
+        );
+        config.fim_pad = matche_token(
+            gguf.get_u32("tokenizer.ggml.fim_pad_token_id"),
+            config.fim_pad,
+        );
+        config.fim_rep = matche_token(
+            gguf.get_u32("tokenizer.ggml.fim_rep_token_id"),
+            config.fim_rep,
+        );
+        config.fim_sep = matche_token(
+            gguf.get_u32("tokenizer.ggml.fim_sep_token_id"),
+            config.fim_sep,
+        );
+
+        config.add_bos = gguf
+            .get_bool("tokenizer.ggml.add_bos_token")
+            .unwrap_or(config.add_bos);
+        config.add_eos = gguf
+            .get_bool("tokenizer.ggml.add_bos_token")
+            .unwrap_or(config.add_eos);
+    }
 
     let tokens = gguf.tokenizer_ggml_tokens().unwrap();
     let scores = gguf
@@ -59,7 +107,8 @@ pub fn load(file: Mmap) {
         .ok()
         .map(|arr| arr.map(|r| r.unwrap()).collect::<Vec<_>>())
         .unwrap();
-
+    // 此处等同于llama.cpp的合并
+    let bpe_ranks = load_gpt2(&gguf);
     let mut id_to_token = Vec::with_capacity(tokens.len());
 
     let mut token_to_id: HashMap<String, TokenId> = HashMap::with_capacity(tokens.len());
@@ -114,61 +163,7 @@ pub fn load(file: Mmap) {
         VocabType::Ugm => todo!(),
         VocabType::Rwkv => todo!(),
     }
-    // 特殊令牌类型的处理
 
-    {
-        let matche_token = |token: Result<u32, GGufMetaError>, target: u32| -> u32 {
-            if token.is_ok() {
-                token.unwrap()
-            } else {
-                target
-            }
-        };
-        config.bos = matche_token(gguf.tokenizer_ggml_bos_token_id(), config.bos);
-        config.eos = matche_token(gguf.tokenizer_ggml_eos_token_id(), config.eos);
-        config.eot = matche_token(gguf.get_u32("tokenizer.ggml.eot_token_id"), config.eot);
-        config.eom = matche_token(gguf.get_u32("tokenizer.ggml.eom_token_id"), config.eom);
-        config.unk = matche_token(gguf.get_u32("tokenizer.ggml.unknown_token_id"), config.unk);
-        config.sep = matche_token(
-            gguf.get_u32("tokenizer.ggml.seperator_token_id"),
-            config.sep,
-        );
-        config.pad = matche_token(gguf.get_u32("tokenizer.ggml.padding_token_id"), config.pad);
-        config.mask = matche_token(gguf.get_u32("tokenizer.ggml.mask_token_id"), config.mask);
-        config.fim_pre = matche_token(
-            gguf.get_u32("tokenizer.ggml.fim_pre_token_id"),
-            config.fim_pre,
-        );
-        config.fim_suf = matche_token(
-            gguf.get_u32("tokenizer.ggml.fim_suf_token_id"),
-            config.fim_suf,
-        );
-        config.fim_mid = matche_token(
-            gguf.get_u32("tokenizer.ggml.fim_mid_token_id"),
-            config.fim_mid,
-        );
-        config.fim_pad = matche_token(
-            gguf.get_u32("tokenizer.ggml.fim_pad_token_id"),
-            config.fim_pad,
-        );
-        config.fim_rep = matche_token(
-            gguf.get_u32("tokenizer.ggml.fim_rep_token_id"),
-            config.fim_rep,
-        );
-        config.fim_sep = matche_token(
-            gguf.get_u32("tokenizer.ggml.fim_sep_token_id"),
-            config.fim_sep,
-        );
-    }
-    // 判断模型是否有 add_bos   add_eos
-    {
-        config.add_bos = gguf
-            .get_bool("tokenizer.ggml.add_bos_token")
-            .unwrap_or(config.add_bos);
-        config.add_eos = gguf
-            .get_bool("tokenizer.ggml.add_bos_token")
-            .unwrap_or(config.add_eos);
-    }
     for (key, value) in &token_to_id {
         if config.eot == NULL {
             if key == "<|eot_id|>"
@@ -181,7 +176,7 @@ pub fn load(file: Mmap) {
                 || key == "<｜end▁of▁sentence｜>"
             // DeepSeek
             {
-                config.eos = *value;
+                config.eot = *value;
                 if (id_to_token[*value as usize].attribute as i32 & TokenAttribute::Control as i32)
                     == 0
                 {
