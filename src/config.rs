@@ -3,7 +3,7 @@ use std::{
     pin::Pin,
 };
 
-use ggus::{GGuf, GGufError, GGufMetaError, GGufMetaMapExt};
+use ggus::{GGuf, GGufError, GGufMetaError, GGufMetaMap, GGufMetaMapExt};
 use memmap2::Mmap;
 
 use crate::{
@@ -41,16 +41,16 @@ pub fn load(file: Mmap) {
     config.vocab_type = VocabType::Bpe;
     // 检查是是否有填充字段，
     // ggml 库中需要添加
-    config.add_space_prefix = get_bool(
-        gguf.get_str("tokenizer.ggml.add_space_prefix").is_ok(),
-        config.add_space_prefix,
-    );
-    // remove_extra_whitespaces
-    config.remove_extra_whitespaces = get_bool(
-        gguf.get_str("tokenizer.ggml.remove_extra_whitespaces")
-            .is_ok(),
-        config.remove_extra_whitespaces,
-    );
+    // config.add_space_prefix = get_bool(
+    //     gguf.get_str("tokenizer.ggml.add_space_prefix").is_ok(),
+    //     config.add_space_prefix,
+    // );
+    // // remove_extra_whitespaces
+    // config.remove_extra_whitespaces = get_bool(
+    //     gguf.get_str("tokenizer.ggml.remove_extra_whitespaces")
+    //         .is_ok(),
+    //     config.remove_extra_whitespaces,
+    // );
 
     let tokens = gguf.tokenizer_ggml_tokens().unwrap();
     let scores = gguf
@@ -165,14 +165,8 @@ pub fn load(file: Mmap) {
     }
     // 判断模型是否有 add_bos   add_eos
     {
-        config.add_space_prefix = get_bool(
-            gguf.get_str("tokenizer.ggml.add_bos_token").is_ok(),
-            config.add_space_prefix,
-        );
-        config.add_space_prefix = get_bool(
-            gguf.get_str("tokenizer.ggml.add_eos_token").is_ok(),
-            config.add_space_prefix,
-        );
+        config.add_bos = true;
+        config.add_eos = false;
     }
     for (key, value) in &token_to_id {
         if config.eot == NULL {
@@ -599,17 +593,20 @@ impl TokenizerConfig {
                             .collect();
                         session_ref.tokenize(substring.as_str(), &mut output);
                     } else {
-                        session_ref.append_bos(&mut output);
+                        session_ref.append_eos(&mut output);
                     }
                 }
+
                 if add_special {
                     session_ref.append_eos(&mut output);
                 }
+                println!("rtrss {:?}", output);
             }
             VocabType::Wpm => todo!(),
             VocabType::Ugm => todo!(),
             VocabType::Rwkv => todo!(),
         }
+        println!("dsas {:?}", output);
         output
     }
     fn tokenizer_st_partition(

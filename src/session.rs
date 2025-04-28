@@ -1,5 +1,5 @@
 use std::{
-    cmp::Ordering,
+    cmp::{Ordering, Reverse},
     collections::{BinaryHeap, HashMap, VecDeque},
 };
 
@@ -83,7 +83,6 @@ impl LlmTokenizerBpeSession {
         for word in word_collection {
             self.work_queue = LlmBigramBpe::new();
             self.symbols.clear();
-
             // 如果词汇表忽略合并且单词已经在词汇表中
             if config.ignore_merges && config.text_to_token(&word) != NULL {
                 todo!();
@@ -96,12 +95,12 @@ impl LlmTokenizerBpeSession {
             }
 
             // 将单词分割为 UTF-8 字符
-            for (i, c) in word.char_indices() {
+            for (i, c) in word.chars().enumerate() {
                 let sym = LlmSymbol {
-                    text: word.to_string(),
+                    text: c.to_string(),
                     n: c.len_utf8(),
                     prev: i as i32 - 1,
-                    next: if i == word.chars().count() {
+                    next: if i == word.chars().count() - 1 {
                         -1
                     } else {
                         i as i32 + 1
@@ -114,7 +113,6 @@ impl LlmTokenizerBpeSession {
             for i in 1..(self.symbols.len() as i32) {
                 self.add_new_bigram(i - 1, i);
             }
-
             // 构建标记
             while let Some(bigram) = self.work_queue.pop_move() {
                 let left_idx = bigram.left as usize;
@@ -123,6 +121,7 @@ impl LlmTokenizerBpeSession {
                 // 获取左右符号的引用
                 let left_symbol = &self.symbols[left_idx];
                 let right_symbol = &self.symbols[right_idx];
+                let flag = format!("{}{}", &left_symbol.text, &right_symbol.text);
 
                 // 如果其中一个符号已经被合并，跳过它
                 if left_symbol.n == 0 || right_symbol.n == 0 {
@@ -130,7 +129,7 @@ impl LlmTokenizerBpeSession {
                 }
 
                 // 检查二元组是否过时
-                if format!("{}{}", &left_symbol.text, &right_symbol.text) != bigram.text {
+                if flag != bigram.text {
                     continue;
                 }
 
@@ -143,11 +142,10 @@ impl LlmTokenizerBpeSession {
                 // 从链中移除右符号
                 let right_next = self.symbols[right_idx].next;
                 self.symbols[left_idx].next = right_next;
-
+                self.symbols[left_idx].text = flag;
                 if right_next >= 0 {
                     self.symbols[right_next as usize].prev = bigram.left;
                 }
-
                 // 寻找更多合并
                 self.add_new_bigram(self.symbols[left_idx].prev, bigram.left);
                 self.add_new_bigram(bigram.left, self.symbols[left_idx].next);
@@ -211,12 +209,10 @@ impl LlmTokenizerBpeSession {
         }
         let binding = GLOBAL_CONFIG.read().unwrap();
         let config = binding.as_ref().unwrap();
-        let left_token = &self.symbols[left as usize].text[..self.symbols[left as usize].n];
-        let right_token = &self.symbols[right as usize].text[..self.symbols[right as usize].n];
-        todo!("以下未测试");
-        let mut rank_found = -1;
+        let left_token = &self.symbols[left as usize].text;
+        let right_token = &self.symbols[right as usize].text;
 
-        rank_found = config.find_bpe_rank(left_token, right_token);
+        let rank_found = config.find_bpe_rank(left_token, right_token);
 
         if rank_found < 0 {
             return;
@@ -252,26 +248,50 @@ pub struct LlmBigramBpeItem {
 /// BPE 二元组优先队列
 #[derive(Debug)]
 pub struct LlmBigramBpe {
-    /// 内部队列
-    queue: VecDeque<LlmBigramBpeItem>,
+    /// 内部队列（最小堆）
+    queue: BinaryHeap<Reverse<LlmBigramBpeItem>>,
+}
+
+/// 为 LlmBigramBpeItem 实现 PartialEq
+impl PartialEq for LlmBigramBpeItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.rank == other.rank
+    }
+}
+
+/// 为 LlmBigramBpeItem 实现 Eq
+impl Eq for LlmBigramBpeItem {}
+
+/// 为 LlmBigramBpeItem 实现 PartialOrd
+impl PartialOrd for LlmBigramBpeItem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// 为 LlmBigramBpeItem 实现 Ord，用于优先队列
+impl Ord for LlmBigramBpeItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.rank.cmp(&other.rank)
+    }
 }
 
 impl LlmBigramBpe {
     /// 创建一个新的 BPE 二元组优先队列
     pub fn new() -> Self {
         Self {
-            queue: VecDeque::new(),
+            queue: BinaryHeap::new(),
         }
     }
 
     /// 添加二元组到队列
     pub fn push(&mut self, item: LlmBigramBpeItem) {
-        self.queue.push_back(item);
+        self.queue.push(Reverse(item));
     }
 
     /// 弹出并移动二元组
     pub fn pop_move(&mut self) -> Option<LlmBigramBpeItem> {
-        self.queue.pop_front()
+        self.queue.pop().map(|Reverse(item)| item)
     }
 
     /// 检查队列是否为空

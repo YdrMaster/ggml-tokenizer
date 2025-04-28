@@ -22,8 +22,8 @@ fn main() {
     load(file);
     let binding = GLOBAL_CONFIG.read().unwrap();
     let config = binding.as_ref().unwrap();
-    // let tmp=config.tokenize(prompt, true, true);
-    // print!("test {:?}", tmp);
+    let tmp = config.tokenize(prompt, true, true);
+    print!("test {:?}", tmp);
     // println!("{}", gguf.general_architecture().unwrap())
 }
 
