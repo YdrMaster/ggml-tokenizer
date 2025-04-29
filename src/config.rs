@@ -3,7 +3,7 @@ use std::{
     pin::Pin,
 };
 
-use ggus::{GGuf, GGufError, GGufMetaError, GGufMetaMap, GGufMetaMapExt};
+use ggus::{GGuf,  GGufMetaError,  GGufMetaMapExt};
 use memmap2::Mmap;
 
 use crate::{
@@ -338,9 +338,11 @@ pub fn load(file: Mmap) {
         .iter()
         .enumerate() // 获取索引 (TokenId) 和 TokenData
         .filter(|(_, token_data)| {
+
             // 检查 token 的属性是否为 Control, UserDefined 或 Unknown
             match token_data.attribute {
                 TokenAttribute::Control | TokenAttribute::UserDefined | TokenAttribute::Unknown => {
+                    println!("{:?}", token_data.text);
                     true
                 }
                 _ => false,
@@ -605,6 +607,9 @@ impl TokenizerConfig {
         println!("dsas {:?}", output);
         output
     }
+    /// 检查文本是否有特殊标记，如果有则将其分割
+    ///
+    /// 例如，将 "Hello <|eot_id|> World" 分割为 "Hello" 和 "World"
     fn tokenizer_st_partition(
         &self,
         buffer: &mut LinkedList<FragmentBufferVariant>,
@@ -751,6 +756,8 @@ impl std::fmt::Debug for TokenizerConfig {
             .field("bos", &self.bos)
             .field("eos", &self.eos)
             .field("eot", &self.eot)
+            .field("eom", &self.eom)
+            .field("unk", &self.unk)
             .field("pad", &self.pad)
             .field("linefeed", &self.linefeed)
             .field("fim_pre", &self.fim_pre)
