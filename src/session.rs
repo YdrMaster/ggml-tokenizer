@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    common::{GLOBAL_CONFIG, NULL, TokenId},
+    common::{NULL, TokenId},
     config::TokenizerConfig,
     unicode::{unicode_len_utf8, unicode_regex_split},
 };
@@ -23,6 +23,7 @@ pub struct LlmSymbol {
 }
 
 /// BPE 标记器会话结构体
+
 pub struct LlmTokenizerBpeSession {
     /// 标记器引用
     tokenizer: LlmTokenizerBpe,
@@ -50,32 +51,8 @@ impl LlmTokenizerBpeSession {
         output.push(token_id);
     }
 
-    /// 添加 BOS 标记
-    pub fn append_bos(&self, output: &mut Vec<TokenId>) -> bool {
-        let binding = GLOBAL_CONFIG.read().unwrap();
-        let config = binding.as_ref().unwrap();
-        if config.add_bos {
-            output.push(config.bos);
-            return true;
-        }
-        false
-    }
-
-    /// 添加 EOS 标记
-    pub fn append_eos(&self, output: &mut Vec<TokenId>) -> bool {
-        let binding = GLOBAL_CONFIG.read().unwrap();
-        let config = binding.as_ref().unwrap();
-        if config.add_eos {
-            output.push(config.eos);
-            return true;
-        }
-        false
-    }
-
     /// 标记化文本
-    pub fn tokenize(&mut self, text: &str, output: &mut Vec<TokenId>) {
-        let binding = GLOBAL_CONFIG.read().unwrap();
-        let config = binding.as_ref().unwrap();
+    pub fn tokenize(&mut self, text: &str, output: &mut Vec<TokenId>, config: &TokenizerConfig) {
         let mut final_prev_index = -1;
         let word_collection = unicode_regex_split(text, &self.tokenizer.regex_exprs);
         self.symbols_final.clear();
@@ -111,7 +88,7 @@ impl LlmTokenizerBpeSession {
 
             // 添加所有可能的二元组
             for i in 1..(self.symbols.len() as i32) {
-                self.add_new_bigram(i - 1, i);
+                self.add_new_bigram(i - 1, i, config);
             }
             // 构建标记
             while let Some(bigram) = self.work_queue.pop_move() {
@@ -147,8 +124,8 @@ impl LlmTokenizerBpeSession {
                     self.symbols[right_next as usize].prev = bigram.left;
                 }
                 // 寻找更多合并
-                self.add_new_bigram(self.symbols[left_idx].prev, bigram.left);
-                self.add_new_bigram(bigram.left, self.symbols[left_idx].next);
+                self.add_new_bigram(self.symbols[left_idx].prev, bigram.left, config);
+                self.add_new_bigram(bigram.left, self.symbols[left_idx].next, config);
             }
 
             // 将完成的标记添加到最终列表，保持正确的顺序
@@ -203,12 +180,11 @@ impl LlmTokenizerBpeSession {
     }
 
     /// 添加新的二元组
-    pub fn add_new_bigram(&mut self, left: i32, right: i32) {
+    pub fn add_new_bigram(&mut self, left: i32, right: i32, config: &TokenizerConfig) {
         if left == -1 || right == -1 {
             return;
         }
-        let binding = GLOBAL_CONFIG.read().unwrap();
-        let config = binding.as_ref().unwrap();
+
         let left_token = &self.symbols[left as usize].text;
         let right_token = &self.symbols[right as usize].text;
 
@@ -370,7 +346,7 @@ impl<'a> LlmTokenizerSpmSession {
     }
 
     /// 标记化文本
-    pub fn tokenize(&mut self, text: &'a str, output: &mut Vec<u32>) {
+    pub fn tokenize(&mut self, text: &'a str, output: &mut Vec<u32>, config: &TokenizerConfig) {
         // 将字符串分割为 UTF-8 字符
         let mut index = 0;
         let mut offs = 0;
@@ -400,7 +376,7 @@ impl<'a> LlmTokenizerSpmSession {
 
         // 用所有可能的 2 字符标记初始化工作队列
         for i in 1..self.symbols.len() {
-            self.try_add_bigram(i as i32 - 1, i as i32);
+            self.try_add_bigram(i as i32 - 1, i as i32, config);
         }
 
         // 持续替换频率最高的对，直到不能再替换
@@ -431,23 +407,21 @@ impl<'a> LlmTokenizerSpmSession {
             }
 
             // 寻找更多替换
-            self.try_add_bigram(self.symbols[left_idx].prev, bigram.left);
-            self.try_add_bigram(bigram.left, self.symbols[left_idx].next);
+            self.try_add_bigram(self.symbols[left_idx].prev, bigram.left, config);
+            self.try_add_bigram(bigram.left, self.symbols[left_idx].next, config);
         }
 
         // 处理最终的符号
         let mut i = 0;
         while i != -1 {
             let symbol = &self.symbols[i as usize];
-            self.resegment(symbol, output);
+            self.resegment(symbol, output, config);
             i = symbol.next;
         }
     }
 
     /// 尝试添加新的二元组
-    fn try_add_bigram(&mut self, left: i32, right: i32) {
-        let binding = GLOBAL_CONFIG.read().unwrap();
-        let config = binding.as_ref().unwrap();
+    fn try_add_bigram(&mut self, left: i32, right: i32, config: &TokenizerConfig) {
         if left == -1 || right == -1 {
             return;
         }
@@ -491,9 +465,7 @@ impl<'a> LlmTokenizerSpmSession {
     }
 
     /// 重新分割符号
-    fn resegment(&self, symbol: &LlmSymbol, output: &mut Vec<u32>) {
-        let binding = GLOBAL_CONFIG.read().unwrap();
-        let config = binding.as_ref().unwrap();
+    fn resegment(&self, symbol: &LlmSymbol, output: &mut Vec<u32>, config: &TokenizerConfig) {
         // 获取符号的文本
         let text = &symbol.text[..symbol.n];
 
@@ -509,8 +481,8 @@ impl<'a> LlmTokenizerSpmSession {
         // 查找反向合并映射
         if let Some(&(left, right)) = self.rev_merge.get(text) {
             // 递归处理左右符号
-            self.resegment(&self.symbols[left as usize], output);
-            self.resegment(&self.symbols[right as usize], output);
+            self.resegment(&self.symbols[left as usize], output, config);
+            self.resegment(&self.symbols[right as usize], output, config);
             return;
         }
 

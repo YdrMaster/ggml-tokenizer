@@ -1,23 +1,23 @@
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet, LinkedList},
-    pin::Pin,
 };
 
-use ggus::{GGuf,  GGufMetaError,  GGufMetaMapExt};
+use ggus::{GGuf, GGufMetaError, GGufMetaMapExt};
 use memmap2::Mmap;
 
 use crate::{
     FragmentBufferVariant, FragmentBufferVariantType,
-    common::{BPE_SESSION, GLOBAL_CONFIG, NULL, TokenAttribute, TokenData, TokenId},
+    common::{NULL, QWEN, TokenAttribute, TokenData, TokenId},
+    session::{LlmTokenizerBpe, LlmTokenizerBpeSession},
     unicode::unicode_byte_to_utf8,
-    untils::{get_bool, llama_escape_whitespace},
+    untils::llama_escape_whitespace,
 };
 
 //  load 函数 默认都是gpt2
-pub fn load(file: Mmap) {
+pub fn load(file: Mmap) -> TokenizerConfig {
     let gguf = GGuf::new(&file).unwrap();
     // 添加多模型支持需要根据 tokenizer_ggml_mode 和tokenizer.ggml.pre对词表进行不同的初始化
-    let model = gguf.tokenizer_ggml_model().unwrap();
 
     let mut config = TokenizerConfig::new();
 
@@ -93,7 +93,7 @@ pub fn load(file: Mmap) {
             .get_bool("tokenizer.ggml.add_bos_token")
             .unwrap_or(config.add_bos);
         config.add_eos = gguf
-            .get_bool("tokenizer.ggml.add_bos_token")
+            .get_bool("tokenizer.ggml.add_eos_token")
             .unwrap_or(config.add_eos);
     }
 
@@ -136,12 +136,7 @@ pub fn load(file: Mmap) {
     }
     config.token_to_id = token_to_id.clone();
     config.id_to_token = id_to_token.clone();
-    // 第一次初始化 GLOBAL_CONFIG，以供tokenize使用
-    // 第一次初始化
-    {
-        let mut global_config = GLOBAL_CONFIG.write().unwrap();
-        *global_config = Some(unsafe { Pin::new_unchecked(std::mem::transmute(&config)) });
-    }
+
     // 待完善 linefeed_id 暂时不支持SPM  构造换行符
     match config.vocab_type {
         VocabType::None | VocabType::Bpe => {
@@ -338,11 +333,9 @@ pub fn load(file: Mmap) {
         .iter()
         .enumerate() // 获取索引 (TokenId) 和 TokenData
         .filter(|(_, token_data)| {
-
             // 检查 token 的属性是否为 Control, UserDefined 或 Unknown
             match token_data.attribute {
                 TokenAttribute::Control | TokenAttribute::UserDefined | TokenAttribute::Unknown => {
-                    println!("{:?}", token_data.text);
                     true
                 }
                 _ => false,
@@ -353,14 +346,7 @@ pub fn load(file: Mmap) {
     config.token_to_id = token_to_id;
     config.id_to_token = id_to_token;
     config.bpe_ranks = bpe_ranks;
-    //  第二次初始化，加载全部信息
-    {
-        // 最后一次初始化
-        {
-            let mut global_config = GLOBAL_CONFIG.write().unwrap();
-            *global_config = Some(Pin::new(Box::leak(Box::new(config))));
-        }
-    }
+    config
 }
 
 fn load_gpt2(gguf: &GGuf) -> HashMap<(String, String), usize> {
@@ -387,7 +373,6 @@ pub enum VocabType {
     Rwkv = 5, // RWKV tokenizer based on greedy tokenization
 }
 
-#[derive(Clone)]
 pub struct TokenizerConfig {
     pub vocab_type: VocabType,
     pub bos: u32,
@@ -417,6 +402,7 @@ pub struct TokenizerConfig {
     pub special_tokens: Vec<TokenId>,
     pub id_to_token: Vec<TokenData>,
     pub bpe_ranks: HashMap<(String, String), usize>,
+    pub session: RefCell<LlmTokenizerBpeSession>,
 }
 impl TokenizerConfig {
     pub fn new() -> Self {
@@ -439,7 +425,7 @@ impl TokenizerConfig {
             mask: NULL,
             add_space_prefix: false,
             add_bos: true,
-            add_eos: true,
+            add_eos: false,
             ignore_merges: false,
             clean_spaces: false,
             remove_extra_whitespaces: false,
@@ -449,6 +435,11 @@ impl TokenizerConfig {
             special_tokens: Vec::new(),
             id_to_token: Vec::new(),
             bpe_ranks: HashMap::new(),
+            session: LlmTokenizerBpeSession::new(LlmTokenizerBpe {
+                // qwen
+                regex_exprs: vec![QWEN.to_string()],
+            })
+            .into(),
         }
     }
     /// 将文本字符串转换为标记 ID
@@ -465,6 +456,22 @@ impl TokenizerConfig {
     }
     pub fn n_tokens(&self) -> u32 {
         self.id_to_token.len() as u32
+    }
+    /// 添加 BOS 标记
+    pub fn append_bos(&self, output: &mut Vec<TokenId>) -> bool {
+        if self.add_bos {
+            output.push(self.bos);
+            return true;
+        }
+        false
+    }
+    /// 添加 EOS 标记
+    pub fn append_eos(&self, output: &mut Vec<TokenId>) -> bool {
+        if self.add_eos {
+            output.push(self.eos);
+            return true;
+        }
+        false
     }
     pub fn get_token_data(&self, id: TokenId) -> TokenData {
         self.id_to_token[id as usize].clone()
@@ -577,9 +584,9 @@ impl TokenizerConfig {
                 }
             }
             VocabType::Bpe => {
-                let mut session_ref = BPE_SESSION.lock().unwrap();
+                let mut session_ref = self.session.borrow_mut();
                 if add_special {
-                    session_ref.append_bos(&mut output);
+                    self.append_bos(&mut output);
                 }
                 for fragment in buffer.iter_mut() {
                     if fragment.variant_type == FragmentBufferVariantType::RawText {
@@ -589,22 +596,19 @@ impl TokenizerConfig {
                             .skip(fragment.offset as usize)
                             .take(fragment.length as usize)
                             .collect();
-                        session_ref.tokenize(substring.as_str(), &mut output);
+                        session_ref.tokenize(substring.as_str(), &mut output, &self);
                     } else {
-                        session_ref.append_eos(&mut output);
                     }
                 }
 
                 if add_special {
-                    session_ref.append_eos(&mut output);
+                    self.append_eos(&mut output);
                 }
-                println!("rtrss {:?}", output);
             }
             VocabType::Wpm => todo!(),
             VocabType::Ugm => todo!(),
             VocabType::Rwkv => todo!(),
         }
-        println!("dsas {:?}", output);
         output
     }
     /// 检查文本是否有特殊标记，如果有则将其分割

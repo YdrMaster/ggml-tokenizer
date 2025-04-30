@@ -1,5 +1,5 @@
 #![feature(linked_list_cursors)]
-use common::{GLOBAL_CONFIG, NULL, TokenAttribute};
+use common::{NULL, TokenAttribute};
 use config::{VocabType, load};
 
 use memmap2::Mmap;
@@ -19,9 +19,8 @@ fn main() {
     let path = std::env::args_os().nth(1).unwrap();
     let file = File::open(path).unwrap();
     let file = unsafe { Mmap::map(&file) }.unwrap();
-    load(file);
-    let binding = GLOBAL_CONFIG.read().unwrap();
-    let config = binding.as_ref().unwrap();
+
+    let config = load(file);
     let tmp = config.tokenize(prompt, true, true);
     print!("test {:?}", tmp);
     // println!("{}", gguf.general_architecture().unwrap())

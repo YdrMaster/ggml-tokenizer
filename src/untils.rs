@@ -1,14 +1,5 @@
 use ggus::GGufMetaError;
 
-pub fn get_bool(model: GGufMetaError) -> bool {
-    match model {
-        GGufMetaError::NotExist => todo!(),
-        GGufMetaError::TypeMismatch(gguf_meta_data_value_type) => todo!(),
-        GGufMetaError::ArrTypeMismatch(gguf_meta_data_value_type) => todo!(),
-        GGufMetaError::OutOfRange => todo!(),
-        GGufMetaError::Read(gguf_read_error) => todo!(),
-    }
-}
 /// 将字符串中的所有空格替换为特殊的 Unicode 字符 U+2581（下八分之一块）
 pub fn llama_escape_whitespace(text: &mut String) {
     // 使用 Rust 的 replace_all 方法替换所有空格

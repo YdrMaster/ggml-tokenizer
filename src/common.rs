@@ -1,32 +1,9 @@
-use std::pin::Pin;
-use std::sync::Arc;
-
-use std::sync::LazyLock;
-use std::sync::Mutex;
-use std::sync::OnceLock;
-use std::sync::RwLock;
-
-use crate::session::LlmTokenizerBpe;
-use crate::{
-    config::TokenizerConfig,
-    session::{LlmTokenizerBpeSession, LlmTokenizerSpmSession},
-};
+use crate::session::{LlmTokenizerBpeSession, LlmTokenizerSpmSession};
 
 pub const NULL: u32 = u32::MAX;
 pub type TokenId = u32;
-pub static GLOBAL_CONFIG: RwLock<Option<Pin<&'static TokenizerConfig>>> = RwLock::new(None);
-pub static SPM_SESSION: OnceLock<LlmTokenizerSpmSession> = OnceLock::new();
-static QWEN: &str = "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
-pub static BPE_SESSION: LazyLock<Mutex<LlmTokenizerBpeSession>> = LazyLock::new(|| {
-    // TODO:这里需要
-    Mutex::new(LlmTokenizerBpeSession::new(LlmTokenizerBpe {
-        // qwen
-        regex_exprs: vec![QWEN.to_string()],
-    }))
-});
-pub fn init_spm_session() {
-    SPM_SESSION.set(LlmTokenizerSpmSession::new()).unwrap();
-}
+
+pub static QWEN: &str = "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 
 #[derive(Debug, Clone)]
 pub struct TokenData {
